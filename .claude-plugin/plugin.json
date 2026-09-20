@@ -1,0 +1,7 @@
+{
+  "name": "agent-autonomous-prompt-engineer",
+  "description": "Autonomously engineers, evaluates and iteratively improves prompts, skills and agent definitions — a skill- and agent-based plugin for headless prompt-optimization runs.",
+  "version": "0.0.0",
+  "author": { "name": "Arne von Appen" },
+  "dependencies": []
+}

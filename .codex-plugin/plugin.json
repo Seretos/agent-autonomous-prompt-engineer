@@ -1,0 +1,12 @@
+{
+  "name": "agent-autonomous-prompt-engineer",
+  "version": "0.0.0",
+  "description": "Autonomously engineers, evaluates and iteratively improves prompts, skills and agent definitions — a skill- and agent-based plugin for headless prompt-optimization runs.",
+  "author": { "name": "Arne von Appen" },
+  "repository": "https://github.com/Seretos/agent-autonomous-prompt-engineer",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Agent Autonomous Prompt Engineer",
+    "shortDescription": "Autonomously engineers, evaluates and iteratively improves prompts, skills and agent definitions — a skill- and agent-based plugin for headless prompt-optimization runs."
+  }
+}
