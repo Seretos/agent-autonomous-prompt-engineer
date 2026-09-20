@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-autonomous-prompt-engineer"
+version = "0.0.0"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pytest-timeout>=2.1"]
+
+[tool.setuptools]
+# The repo root holds plugin content directories (skills/, agents/, scripts/,
+# hooks/, assets/), none of them an importable package; without this,
+# setuptools' flat-layout discovery refuses to guess and `pip install -e` fails.
+py-modules = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
+timeout_method = "thread"

@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "scenario": { "type": "string", "description": "the scenario id the finding is about" },
+          "kind": {
+            "type": "string",
+            "enum": ["tailored", "answer-leak", "unfalsifiable", "off-requirement", "plan-level"]
+          },
+          "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
+          "violated_criterion": {
+            "type": "string",
+            "description": "verbatim quote from the specification, or the scenario id exactly as given"
+          },
+          "wrong_change_that_passes": {
+            "type": "string",
+            "description": "the concrete wrong change (or context-free consumer) that would still score improved"
+          },
+          "what": { "type": "string" },
+          "suggestion": { "type": "string" }
+        },
+        "required": ["id", "scenario", "kind", "severity", "violated_criterion", "what"]
+      }
+    },
+    "solid": { "type": "array", "items": { "type": "string" } },
+    "unverifiable_without_codebase_access": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["findings", "solid", "unverifiable_without_codebase_access"]
+}
