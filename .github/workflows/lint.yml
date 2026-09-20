@@ -15,19 +15,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate plugin.json is valid JSON
-        run: jq empty .claude-plugin/plugin.json
+      - name: Validate plugin manifests and hooks.json are valid JSON
+        run: jq empty .claude-plugin/plugin.json .codex-plugin/plugin.json hooks/hooks.json
 
-      - name: Validate SKILL.md has YAML frontmatter
-        run: |
-          python3 - <<'EOF'
-          import re, sys
-          text = open("skills/autonomous-prompt-engineer/SKILL.md", encoding="utf-8").read()
-          m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
-          if not m:
-              print("::error::SKILL.md missing YAML frontmatter"); sys.exit(1)
-          fm = m.group(1)
-          if "name:" not in fm or "description:" not in fm:
-              print("::error::SKILL.md frontmatter missing 'name' or 'description'"); sys.exit(1)
-          print("SKILL.md: OK")
-          EOF
+      # Tier 0 of this plugin, run on itself: frontmatter, LF-only, every
+      # ${CLAUDE_PLUGIN_ROOT} reference exists, contract tables agree with
+      # the scripts that implement them.
+      - name: Tier 0 lint of skills, agents and hooks.json
+        run: python3 scripts/lint_prose.py --root . --all
+
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The scripts start processes, build temp paths and shell out to git;
+        # Windows is where the maintainer runs them, Linux is where CI does.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run pytest
+        run: python -m pytest -q

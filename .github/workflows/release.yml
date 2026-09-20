@@ -69,10 +69,17 @@ jobs:
         run: |
           STAGE="build/stage/agent-autonomous-prompt-engineer"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/.claude-plugin" "$STAGE/.codex-plugin" "$STAGE/skills"
+          mkdir -p "$STAGE/.claude-plugin" "$STAGE/.codex-plugin" "$STAGE/skills" "$STAGE/agents" "$STAGE/scripts" "$STAGE/hooks"
           cp .claude-plugin/plugin.json "$STAGE/.claude-plugin/"
           cp .codex-plugin/plugin.json  "$STAGE/.codex-plugin/"
           cp -a skills/. "$STAGE/skills/"
+          # agents/, scripts/ and hooks/ are referenced at runtime via
+          # ${CLAUDE_PLUGIN_ROOT}/... from the skill, the agents and hooks.json;
+          # a stage that drops one of them installs a plugin that fails silently.
+          cp -a agents/.  "$STAGE/agents/"
+          cp -a scripts/. "$STAGE/scripts/"
+          cp -a hooks/.   "$STAGE/hooks/"
+          find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           # assets/ goes onto the orphan release branch so the dispatch
@@ -87,6 +94,11 @@ jobs:
           # a checkout without `* text=auto eol=lf` writes CRLF into the plugin cache —
           # and Claude Code silently ignores CRLF skills/agents. (Rebuild incident 2026-08-23.)
           [ -f .gitattributes ] && cp -a .gitattributes "$STAGE/" || true
+
+          # Gate: every ${CLAUDE_PLUGIN_ROOT}/<path> the staged skill, agents and
+          # hooks.json mention exists in the stage, contract tables agree with the
+          # staged scripts, and every staged skill/agent file is LF-only.
+          python3 scripts/lint_prose.py --root "$STAGE" --all
 
           mkdir -p dist
           ZIPNAME="agent-autonomous-prompt-engineer-${{ inputs.version }}.zip"
