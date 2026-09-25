@@ -12,8 +12,16 @@ drive the real baseline-vs-after path end to end.
 
 FAKE_CLAUDE_LOG   directory; one JSON record file per invocation (samples run in
                   parallel, so a shared append-mode file would lose records)
-FAKE_CLAUDE_MODE  ok (default) | leak | mcp | crash
+FAKE_CLAUDE_MODE  ok (default) | leak | mcp | crash | crash-one
+                  crash-one: exactly one of the parallel processes sharing
+                  FAKE_CLAUDE_LOG crashes (the first to claim a lock file
+                  there); every other one answers normally — for testing
+                  `blind_run.py --retry-invalid` against a partially invalid
+                  result without making every sample crash.
 FAKE_CLAUDE_CRITIQUE  JSON for structured_output in json mode
+FAKE_CLAUDE_FIELDS    JSON object; overrides the `fields` sub-object of a
+                      schema-based structured answer (default: every
+                      requested field mirrors `could_complete`)
 """
 import json
 import os
@@ -32,6 +40,23 @@ def main():
     plugin_dir = arg_after(argv, "--plugin-dir")
     system_prompt = arg_after(argv, "--system-prompt")
     output_format = arg_after(argv, "--output-format")
+    json_schema_arg = arg_after(argv, "--json-schema")
+    log = os.environ.get("FAKE_CLAUDE_LOG")
+
+    if mode == "crash-one":
+        # The first process to claim the lock crashes; every other one, in
+        # this run or a later --retry-invalid call sharing the same log dir,
+        # answers normally. The lock lives NEXT TO the log dir, never inside
+        # it — FAKE_CLAUDE_LOG holds one JSON record per invocation, nothing
+        # else, and tests read every file in it as JSON.
+        lock_dir = (log or ".") + "-locks"
+        os.makedirs(lock_dir, exist_ok=True)
+        lock_path = os.path.join(lock_dir, "crash-one.lock")
+        try:
+            os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            mode = "crash"
+        except FileExistsError:
+            mode = "ok"
 
     plugin_files = {}
     if plugin_dir:
@@ -42,7 +67,6 @@ def main():
                 with open(full, encoding="utf-8") as fh:
                     plugin_files[rel] = fh.read()
 
-    log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:
         os.makedirs(log, exist_ok=True)
         with open(os.path.join(log, f"{time.time_ns()}-{os.getpid()}.json"), "w", encoding="utf-8") as fh:
@@ -51,6 +75,9 @@ def main():
                                  "plugin_files": plugin_files, "stdin": stdin}) + "\n")
 
     if mode == "crash":
+        # A real crash still writes what it managed before dying — an init
+        # event — so `last_event_type` is meaningful, not just "no events".
+        print(json.dumps({"type": "system", "subtype": "init", "mcp_servers": [], "plugins": []}))
         sys.stderr.write("fake: simulated crash\n")
         return 3
 
@@ -87,6 +114,16 @@ def main():
         text = "3 furlongs are 603.504 meters" if knows else "I do not know the conversion factor"
         structured = {"could_complete": knows, "selected": "unit-docs" if knows else "none",
                       "answer": text, "missing": [] if knows else ["the factor"], "confusing": []}
+        if json_schema_arg:
+            try:
+                schema = json.loads(json_schema_arg)
+            except (TypeError, ValueError):
+                schema = {}
+            field_props = ((schema.get("properties") or {}).get("fields") or {}).get("properties") or {}
+            if field_props:
+                override = os.environ.get("FAKE_CLAUDE_FIELDS")
+                structured["fields"] = (json.loads(override) if override
+                                        else {name: knows for name in field_props})
     content.append({"type": "text", "text": text})
     events.append({"type": "assistant", "message": {"role": "assistant", "content": content}})
     events.append({"type": "result", "subtype": "success", "is_error": False, "result": text,

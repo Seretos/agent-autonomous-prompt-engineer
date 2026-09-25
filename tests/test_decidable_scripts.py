@@ -4,7 +4,7 @@ tier-0 lint, scenario validation, stagnation check.
 """
 import json
 
-from conftest import REPO, git, run_script, write_json
+from conftest import FIXTURES, REPO, git, run_script, write_json
 
 # --- event_block.py -------------------------------------------------------------------------
 
@@ -214,7 +214,12 @@ def _scenario(tmp_path, **overrides):
     scenario = {"id": "S1", "requirement": "R1", "tier": 2,
                 "surface": {"kind": "skill", "paths": ["skills/units/SKILL.md"]},
                 "task": "How many meters are three of those old horse-racing lengths?",
-                "expect": {"selects": "units", "matches": [r"603\.5"]}}
+                "expect": {"selects": "units", "matches": [r"603\.5"]},
+                "controls": [
+                    {"outcome": "pass", "selected": ["units"],
+                     "answer_text": "Three furlongs are 603.504 meters."},
+                    {"outcome": "fail", "selected": ["units"],
+                     "answer_text": "I'm not sure how long a furlong is."}]}
     scenario.update(overrides)
     return write_json(tmp_path / "scenarios" / f"{scenario['id']}.json", scenario)
 
@@ -247,6 +252,150 @@ def test_step_replay_needs_a_real_case_and_the_recorded_wrong_verdict(tmp_path):
     proc = run_script("scenario_validate.py", path)
     assert proc.returncode == 1
     assert "recorded_wrong" in proc.stdout and "does not exist" in proc.stdout
+
+
+def test_scenario_needs_a_passing_and_a_failing_control(tmp_path):
+    proc = run_script("scenario_validate.py", _scenario(tmp_path, controls=[]))
+    assert proc.returncode == 1 and "[malformed]" in proc.stdout and "controls" in proc.stdout
+
+
+def test_a_control_that_scores_the_wrong_way_is_a_control_mismatch(tmp_path):
+    bad_pass = _scenario(tmp_path, controls=[
+        {"outcome": "pass", "selected": ["units"], "answer_text": "I have no idea."},
+        {"outcome": "fail", "selected": ["units"], "answer_text": "Not sure."}])
+    proc = run_script("scenario_validate.py", bad_pass)
+    assert proc.returncode == 1 and "[control-mismatch]" in proc.stdout
+
+    bad_fail = _scenario(tmp_path, controls=[
+        {"outcome": "pass", "selected": ["units"], "answer_text": "Three furlongs are 603.5 meters."},
+        {"outcome": "fail", "selected": ["units"], "answer_text": "Three furlongs are 603.5 meters too."}])
+    proc = run_script("scenario_validate.py", bad_fail)
+    assert proc.returncode == 1 and "[control-mismatch]" in proc.stdout
+
+
+# --- scenario_validate.py: `fields` --------------------------------------------------------
+
+
+def _field_scenario(tmp_path, **overrides):
+    scenario = {"id": "S1", "requirement": "R1", "tier": 2,
+                "surface": {"kind": "skill", "paths": ["skills/pr/SKILL.md"]},
+                "task": "Does putting Bob on the PR as a reviewer, by itself, get it merged?",
+                "fields": {"merges_it": {"type": "boolean",
+                                         "question": "Does the reviewer-request call by "
+                                                     "itself get the PR merged?"}},
+                "expect": {"fields": {"merges_it": False}},
+                "controls": [
+                    {"outcome": "pass", "answer_text": "No, Bob still has to approve.",
+                     "structured": {"fields": {"merges_it": False}}},
+                    {"outcome": "fail", "answer_text": "Yes, that's enough.",
+                     "structured": {"fields": {"merges_it": True}}}]}
+    scenario.update(overrides)
+    return write_json(tmp_path / "scenarios" / f"{scenario['id']}.json", scenario)
+
+
+def test_a_boolean_field_scenario_validates(tmp_path):
+    proc = run_script("scenario_validate.py", _field_scenario(tmp_path))
+    assert proc.returncode == 0 and "SCENARIOS: OK" in proc.stdout
+
+
+def test_fields_on_an_agent_step_scenario_is_malformed(tmp_path):
+    path = _field_scenario(tmp_path, tier=1, surface={"kind": "agent-step", "paths": ["agents/a.md"]},
+                           case_input="cases/missing.case.md", recorded_wrong="x")
+    proc = run_script("scenario_validate.py", path)
+    assert proc.returncode == 1 and "[malformed]" in proc.stdout and "fields" in proc.stdout
+
+
+def test_a_field_question_that_leaks_the_expected_match_is_answer_leak(tmp_path):
+    path = _field_scenario(tmp_path, task="Say whether Bob's review request merges the PR.",
+                           fields={"merges_it": {"type": "boolean",
+                                                 "question": "The answer is 603.5 — is that right?"}},
+                           expect={"fields": {"merges_it": False}, "matches": [r"603\.5"]})
+    proc = run_script("scenario_validate.py", path)
+    assert proc.returncode == 1 and "[answer-leak]" in proc.stdout
+
+
+# --- scenario_validate.py, on the real incident of agent-project-issues#386 -----------------
+
+INCIDENT_386 = FIXTURES / "incident-386"
+
+
+def _incident_scenario(tmp_path, name, **extra_controls_or_overrides):
+    scenario = json.loads((INCIDENT_386 / f"{name}.scenario.json").read_text(encoding="utf-8"))
+    scenario.update(extra_controls_or_overrides)
+    return write_json(tmp_path / "scenarios" / f"{scenario['id']}.json", scenario)
+
+
+def test_the_real_attempt_2_s1_scenario_is_an_echo_trap(tmp_path):
+    """agent-autonomous-prompt-engineer#5, attempt 2: two `forbids` regexes
+    already match the task's own wording ("that call by itself gets the PR
+    merged"), so a consumer that states the right (negative) answer is
+    rejected for echoing the question."""
+    after = json.loads((INCIDENT_386 / "a2-S1.after.json").read_text(encoding="utf-8"))
+    real_right_answer = next(s for s in after["samples"] if s["valid"])
+    path = _incident_scenario(tmp_path, "a2-S1", controls=[
+        {"outcome": "pass", "selected": real_right_answer["selected"],
+         "answer_text": real_right_answer["answer_text"]},
+        {"outcome": "fail", "selected": ["project-issues"],
+         "answer_text": "Assigning Bob as reviewer merges the PR immediately."}])
+    proc = run_script("scenario_validate.py", path)
+    assert proc.returncode == 1
+    assert "[echo-trap]" in proc.stdout
+
+
+def test_the_real_attempt_1_s5_scenario_rejects_a_markdown_emphasised_negation(tmp_path):
+    """agent-autonomous-prompt-engineer#5, attempt 1: the forbid's negative
+    lookbehind (`(?<!not )`) cannot see "not" through Markdown `**not**` —
+    a plain-text right answer passes, the same answer with its negation
+    bolded does not."""
+    path = _incident_scenario(tmp_path, "a1-S5", controls=[
+        {"outcome": "pass", "selected": ["project-issues"],
+         "answer_text": "GitLab does not refuse the call the way GitHub does; it will "
+                         "create the merge request even with no real diff, but it stays "
+                         "unmergeable until feature/login has commits ahead of main."},
+        {"outcome": "fail", "selected": ["project-issues"],
+         "answer_text": "GitLab will refuse to create the merge request outright."}])
+    proc = run_script("scenario_validate.py", path)
+    assert proc.returncode == 1
+    assert "[negation-trap]" in proc.stdout
+
+
+def test_the_real_attempt_1_s5_after_answer_itself_is_a_control_mismatch(tmp_path):
+    """The real after-sample already writes the negation as `**not**` — used
+    directly as the positive control, it fails the forbid outright, without
+    needing scenario_validate.py to construct the emphasised variant itself."""
+    after = json.loads((INCIDENT_386 / "a1-S5.after.json").read_text(encoding="utf-8"))
+    real_right_answer = next(s for s in after["samples"] if "**not**" in s["answer_text"])
+    path = _incident_scenario(tmp_path, "a1-S5", controls=[
+        {"outcome": "pass", "selected": real_right_answer["selected"],
+         "answer_text": real_right_answer["answer_text"]},
+        {"outcome": "fail", "selected": ["project-issues"],
+         "answer_text": "GitLab will refuse to create the merge request outright."}])
+    proc = run_script("scenario_validate.py", path)
+    assert proc.returncode == 1
+    assert "[control-mismatch]" in proc.stdout
+
+
+def test_the_real_attempt_1_s1_scenario_needs_tools_the_consumer_does_not_have(tmp_path):
+    """agent-autonomous-prompt-engineer#5, attempt 1: the task says "using
+    the ticket/PR tools you have in this session", but a `skill` surface's
+    blind consumer has only Skill/Read/Glob/Grep — no MCP. The real samples
+    correctly reported `could_complete: false`; used as controls, that is
+    exactly what a `could_complete` check in `expect` would need to treat as
+    passing, which the real scenario's `expect` (no `fields`, no tolerance)
+    does not."""
+    after = json.loads((INCIDENT_386 / "a1-S1.after.json").read_text(encoding="utf-8"))
+    real_sample = next(s for s in after["samples"] if s["valid"])
+    assert real_sample["structured"]["could_complete"] is False
+    scenario = json.loads((INCIDENT_386 / "a1-S1.scenario.json").read_text(encoding="utf-8"))
+    scenario["controls"] = [
+        {"outcome": "pass", "selected": real_sample["selected"],
+         "answer_text": real_sample["answer_text"], "structured": real_sample["structured"]},
+        {"outcome": "fail", "selected": [], "answer_text": "Sure, done."}]
+    path = write_json(tmp_path / "scenarios" / f"{scenario['id']}.json", scenario)
+    proc = run_script("scenario_validate.py", path)
+    # The real right answer (could_complete: false, for a task the consumer
+    # genuinely cannot do) fails `expect` exactly like every after-sample did.
+    assert proc.returncode == 1 and "[control-mismatch]" in proc.stdout
 
 
 # --- stagnation_check.py --------------------------------------------------------------------

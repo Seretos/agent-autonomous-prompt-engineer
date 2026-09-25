@@ -58,21 +58,30 @@ def is_inside(path, root):
     return path == root or path.startswith(root.rstrip("\\/") + os.sep)
 
 
+def inside_git_checkout(path):
+    """Whether `path` or one of its parents holds a `.git` — walked upward
+    the same way CLAUDE.md discovery walks parents, so this catches exactly
+    what would defeat that isolation."""
+    probe = os.path.abspath(path)
+    while True:
+        if os.path.exists(os.path.join(probe, ".git")):
+            return True
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        probe = parent
+
+
 def fresh_workdir(prefix="ape-"):
     """An empty directory outside every repository. Refuses a temp dir that
     sits inside a git checkout — that would defeat the isolation silently."""
     workdir = tempfile.mkdtemp(prefix=prefix)
-    probe = workdir
-    while True:
-        if os.path.exists(os.path.join(probe, ".git")):
-            shutil.rmtree(workdir, ignore_errors=True)
-            raise RuntimeError(
-                f"temp directory {workdir} is inside a git checkout ({probe}); "
-                "set TMPDIR/TEMP to a directory outside any repository")
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            return workdir
-        probe = parent
+    if inside_git_checkout(workdir):
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise RuntimeError(
+            f"temp directory {workdir} is inside a git checkout; "
+            "set TMPDIR/TEMP to a directory outside any repository")
+    return workdir
 
 
 def run_isolated(extra_args, stdin_text, cwd, timeout):

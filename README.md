@@ -53,9 +53,11 @@ python scripts/tier_select.py --requirements requirements.json [--worktree . --b
 python scripts/scenario_validate.py scenarios/*.json
 python scripts/case_builder.py --ticket-file ticket.json --at 2026-09-20T18:48:00Z --step triage --out case.md
 python scripts/blind_run.py --scenario scenarios/S1.json --root . --git-ref origin/main --label baseline --out-dir evidence
-python scripts/blind_run.py --scenario scenarios/S1.json --root . --label after --out-dir evidence
-python scripts/evidence_merge.py --scenarios-dir scenarios --results-dir evidence --out evidence-merged.json
+python scripts/blind_run.py --scenario scenarios/S1.json --root . --label after --out-dir evidence [--retry-invalid]
+python scripts/blind_run.py --print-contract consumer
+python scripts/evidence_merge.py --scenarios-dir scenarios --results-dir evidence --out evidence-merged.json [--repairs-file scenario-repairs.json]
 python scripts/scenario_critic_run.py --spec spec.md --plan plan.md --scenarios-dir scenarios --out-dir critic
+python scripts/rundir_archive.py --rundir <rundir> --project <project_id> --package <package> --attempt <attempt>
 ```
 
 `case_builder.py` takes the ticket as the JSON the project-issues MCP's `get_ticket` returns. It archives nothing: comments, session transcripts (`~/.claude/projects/`) and git already are the history. It prints its limits (`LIMIT:` — ticket bodies are not versioned) and exits 4, writing nothing, when the transcript folder is not on this machine.

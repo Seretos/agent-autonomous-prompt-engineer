@@ -5,8 +5,11 @@ scenario-critic runner, and the case builder on the real incident.
 """
 import json
 import os
+import sys
 
-from conftest import FIXTURES, git, run_script, write_json
+from conftest import FIXTURES, SCRIPTS, git, run_script, write_json
+
+sys.path.insert(0, str(SCRIPTS))
 
 OLD_SKILL = ("---\nname: units\ndescription: Helps with measurements.\n---\n"
              "Convert carefully.\n")
@@ -31,7 +34,12 @@ def _skill_scenario(tmp_path):
         "id": "S1", "requirement": "R1", "tier": 2,
         "surface": {"kind": "skill", "paths": ["skills/units/SKILL.md"]},
         "task": "How many meters are three of those old horse-racing lengths?",
-        "expect": {"selects": "units", "matches": [r"603\.5"]}})
+        "expect": {"selects": "units", "matches": [r"603\.5"]},
+        "controls": [
+            {"outcome": "pass", "selected": ["units"],
+             "answer_text": "Three furlongs are 603.504 meters."},
+            {"outcome": "fail", "selected": ["units"],
+             "answer_text": "I'm not sure how long a furlong is."}]})
 
 
 def _blind(fake_env, scenario, repo, label, out_dir, *extra, mode="ok"):
@@ -128,7 +136,10 @@ def test_an_artifact_absent_at_the_ref_is_recorded_as_absent_and_not_run(tmp_pat
     scenario = write_json(tmp_path / "scenarios" / "S2.json", {
         "id": "S2", "requirement": "R2", "tier": 2,
         "surface": {"kind": "skill", "paths": ["skills/brand-new/SKILL.md"]},
-        "task": "Convert something.", "expect": {"selects": "brand-new"}})
+        "task": "Convert something.", "expect": {"selects": "brand-new"},
+        "controls": [
+            {"outcome": "pass", "selected": ["brand-new"], "answer_text": "42 units."},
+            {"outcome": "fail", "selected": [], "answer_text": "I don't know."}]})
     proc = _blind(fake_env, scenario, repo, "baseline", tmp_path / "evidence", "--git-ref", "main")
     assert proc.returncode == 0 and "ARTIFACT: absent" in proc.stdout
     assert fake_env.invocations() == []
@@ -172,7 +183,10 @@ def test_step_replay_runs_the_agent_body_as_system_prompt_on_the_case_input(tmp_
         "id": "S3", "requirement": "R3", "tier": 1,
         "surface": {"kind": "agent-step", "paths": ["agents/triage.md"]},
         "case_input": "cases/c.case.md", "recorded_wrong": "pin test",
-        "expect": {"matches": ["ESCALATE"]}})
+        "expect": {"matches": ["ESCALATE"]},
+        "controls": [
+            {"outcome": "pass", "answer_text": "STATUS: ESCALATE — no test for model-read prose"},
+            {"outcome": "fail", "answer_text": "STATUS: ANSWERED — add a pin test on SKILL.md"}]})
     proc = _blind(fake_env, scenario, repo, "after", tmp_path / "evidence")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     call = fake_env.invocations()[0]
@@ -180,6 +194,86 @@ def test_step_replay_runs_the_agent_body_as_system_prompt_on_the_case_input(tmp_
     assert argv[argv.index("--system-prompt") + 1].strip() == "Model-read prose carries no test."
     assert argv[argv.index("--tools") + 1] == "" and "--plugin-dir" not in argv
     assert call["stdin"] == "# [case] the blocked event\n"
+
+
+def test_a_crashed_sample_records_stderr_tail_and_the_last_event_type(tmp_path, fake_env):
+    repo = _repo_with_skill(tmp_path)
+    proc = _blind(fake_env, _skill_scenario(tmp_path), repo, "after", tmp_path / "evidence", mode="crash")
+    assert proc.returncode == 1
+    record = json.loads((tmp_path / "evidence" / "S1.after.json").read_text(encoding="utf-8"))
+    for sample in record["samples"]:
+        assert not sample["valid"]
+        assert "simulated crash" in sample["stderr_tail"]
+        assert sample["last_event_type"] == "system"
+    assert all("last_event=system" in p["what"]
+              for s in record["samples"] for p in s["invalid_reasons"] if p["reason"] == "crashed")
+
+
+def test_retry_invalid_reruns_only_the_crashed_samples_and_caches_the_completed_result(tmp_path, fake_env):
+    repo = _repo_with_skill(tmp_path)
+    scenario = _skill_scenario(tmp_path)
+    evidence = tmp_path / "evidence"
+    first = _blind(fake_env, scenario, repo, "after", evidence, mode="crash-one")
+    assert first.returncode == 1
+    before = json.loads((evidence / "S1.after.json").read_text(encoding="utf-8"))
+    crashed = [s["sample"] for s in before["samples"] if not s["valid"]]
+    assert len(crashed) == 1
+    calls_after_first = len(fake_env.invocations())
+
+    retry = _blind(fake_env, scenario, repo, "after", evidence, "--retry-invalid", mode="crash-one")
+    assert retry.returncode == 0, retry.stdout + retry.stderr
+    assert "CACHE: retried" in retry.stdout
+    assert len(fake_env.invocations()) == calls_after_first + 1  # exactly the one crashed sample reran
+
+    after = json.loads((evidence / "S1.after.json").read_text(encoding="utf-8"))
+    assert all(s["valid"] for s in after["samples"])
+    # the two samples that were already valid are untouched
+    kept = {s["sample"]: s["answer_text"] for s in after["samples"] if s["sample"] != crashed[0]}
+    assert kept == {s["sample"]: s["answer_text"] for s in before["samples"] if s["sample"] != crashed[0]}
+
+    third = _blind(fake_env, scenario, repo, "after", tmp_path / "evidence2", mode="crash-one")
+    assert "CACHE: hit" in third.stdout  # ticket #3: a completed retry is cached like any other run
+
+
+def test_no_cache_only_skips_the_read_a_valid_run_is_still_cached(tmp_path, fake_env):
+    repo = _repo_with_skill(tmp_path)
+    scenario = _skill_scenario(tmp_path)
+    evidence = tmp_path / "evidence"
+    proc = _blind(fake_env, scenario, repo, "after", evidence, "--no-cache")
+    assert proc.returncode == 0 and "CACHE: miss" in proc.stdout
+    again = _blind(fake_env, scenario, repo, "after", tmp_path / "evidence2")
+    assert "CACHE: hit" in again.stdout
+
+
+def test_fields_are_added_to_the_consumer_schema_and_scored_end_to_end(tmp_path, fake_env):
+    repo = _repo_with_skill(tmp_path)
+    scenario = write_json(tmp_path / "scenarios" / "S1.json", {
+        "id": "S1", "requirement": "R1", "tier": 2,
+        "surface": {"kind": "skill", "paths": ["skills/units/SKILL.md"]},
+        "task": "Is a furlong longer than 200 meters?",
+        "fields": {"over_200m": {"type": "boolean", "question": "Is a furlong over 200 meters?"}},
+        "expect": {"selects": "units", "fields": {"over_200m": True}},
+        "controls": [
+            {"outcome": "pass", "selected": ["units"], "answer_text": "Yes.",
+             "structured": {"fields": {"over_200m": True}}},
+            {"outcome": "fail", "selected": ["units"], "answer_text": "No.",
+             "structured": {"fields": {"over_200m": False}}}]})
+    evidence = tmp_path / "evidence"
+    baseline = _blind(fake_env, scenario, repo, "baseline", evidence, "--git-ref", "main")
+    assert baseline.returncode == 0
+    call = fake_env.invocations()[0]
+    schema = json.loads(call["argv"][call["argv"].index("--json-schema") + 1])
+    assert "fields" in schema["properties"]
+    assert schema["properties"]["fields"]["properties"]["over_200m"]["type"] == "boolean"
+
+    after = _blind(fake_env, scenario, repo, "after", evidence)
+    assert after.returncode == 0
+    proc = run_script("evidence_merge.py", "--scenarios-dir", tmp_path / "scenarios",
+                      "--results-dir", evidence, "--out", tmp_path / "merged.json")
+    row = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))["scenarios"][0]
+    # old text doesn't know the factor (over_200m defaults false==knows); new text does
+    assert row["baseline"]["passes"] == 0 and row["after"]["passes"] == 3
+    assert row["verdict"] == "improved"
 
 
 # --- evidence_merge.py ----------------------------------------------------------------------
@@ -208,7 +302,10 @@ def _samples(*passing):
 def _merge_case(tmp_path, baseline, after, invalid_after=0):
     write_json(tmp_path / "scenarios" / "S1.json", {
         "id": "S1", "requirement": "R1", "tier": 2, "surface": {"kind": "doc", "paths": ["d.md"]},
-        "task": "decide", "expect": {"matches": ["ESCALATE"], "forbids": ["pin test"]}})
+        "task": "decide", "expect": {"matches": ["ESCALATE"], "forbids": ["pin test"]},
+        "controls": [
+            {"outcome": "pass", "answer_text": "STATUS: ESCALATE"},
+            {"outcome": "fail", "answer_text": "STATUS: ANSWERED add a pin test"}]})
     write_json(tmp_path / "results" / "S1.baseline.json", {"samples": _samples(*baseline), "cache": "hit"})
     if after is not None:
         samples = _samples(*after)
@@ -227,6 +324,10 @@ def test_the_pass_rule_is_a_delta_a_high_but_unchanged_score_fails(tmp_path):
     # shaped for stagnation_check.py's `evidence` gate
     assert merged["findings"][0]["kind"] == "unchanged"
     assert merged["findings"][0]["violated_criterion"] == "R1/S1"
+    # the failing sample also fails `matches` (not only `forbids`), so this is
+    # a real content finding, never `suspect`
+    assert not merged["scenarios"][0].get("suspect")
+    assert not merged["findings"][0]["suspect"]
 
 
 def test_a_low_score_that_improved_passes(tmp_path):
@@ -261,6 +362,71 @@ def test_baseline_only_names_saturated_scenarios_so_no_after_run_is_paid_for(tmp
     assert proc.returncode == 0 and merged["scenarios"][0]["verdict"] == "saturated"
 
 
+# --- evidence_merge.py: suspect / repair (agent-autonomous-prompt-engineer#5) ---------------
+
+
+def _suspect_case(tmp_path, baseline_answers, after_answers, repairs=None):
+    """A scenario whose only `expect` is a `forbids` regex on "by itself" —
+    the real shape of agent-project-issues#386's attempt-2/S1: every right
+    answer that states the (correct) negative necessarily echoes the task's
+    own words back, so a right answer fails on `forbids` alone, never on
+    `matches`/`selects`/`fields`."""
+    write_json(tmp_path / "scenarios" / "S1.json", {
+        "id": "S1", "requirement": "R1", "tier": 2, "surface": {"kind": "doc", "paths": ["d.md"]},
+        "task": "Does this call by itself merge the PR?",
+        "expect": {"forbids": [r"by itself"]}})
+
+    def samples(texts):
+        return [{"sample": i + 1, "valid": True, "selected": [], "structured": None, "answer_text": t}
+                for i, t in enumerate(texts)]
+    write_json(tmp_path / "results" / "S1.baseline.json", {"samples": samples(baseline_answers), "cache": "hit"})
+    write_json(tmp_path / "results" / "S1.after.json", {"samples": samples(after_answers)})
+    args = ["evidence_merge.py", "--scenarios-dir", tmp_path / "scenarios", "--results-dir",
+            tmp_path / "results", "--out", tmp_path / "merged.json"]
+    if repairs is not None:
+        args += ["--repairs-file", write_json(tmp_path / "repairs.json", repairs)]
+    proc = run_script(*args)
+    return proc, json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))
+
+
+ECHOES_THE_TASK = ["No, not by itself — Bob still has to approve.",
+                   "No, that call by itself does not merge it.",
+                   "No — by itself it only requests review."]
+
+
+def test_a_scenario_that_rejects_every_right_answer_is_suspect_and_triggers_repair(tmp_path):
+    proc, merged = _suspect_case(tmp_path, baseline_answers=ECHOES_THE_TASK, after_answers=ECHOES_THE_TASK)
+    assert proc.returncode == 4 and merged["result"] == "repair"
+    assert merged["scenarios"][0]["verdict"] == "unchanged" and merged["scenarios"][0]["suspect"]
+    assert merged["repairable"] == ["S1"]
+    assert merged["findings"] == []  # pulled out, not reported as a prose finding
+    assert "REPAIR: S1" in proc.stdout
+
+
+def test_a_missing_repairs_file_is_read_as_nothing_repaired_yet(tmp_path):
+    proc, merged = _suspect_case(tmp_path, baseline_answers=ECHOES_THE_TASK, after_answers=ECHOES_THE_TASK,
+                                 repairs=None)
+    # (repairs=None means the flag is never passed — the file simply does not exist)
+    assert proc.returncode == 4 and merged["repairable"] == ["S1"]
+
+
+def test_a_suspect_scenario_already_named_in_repairs_file_is_a_real_finding_once(tmp_path):
+    proc, merged = _suspect_case(tmp_path, baseline_answers=ECHOES_THE_TASK, after_answers=ECHOES_THE_TASK,
+                                 repairs=["S1"])
+    assert proc.returncode == 1 and merged["result"] == "fail"
+    assert merged["repairable"] == []
+    assert merged["findings"][0]["suspect"] is True
+    assert merged["scenarios"][0]["repaired"] is True
+    assert "REPAIR_USED: S1" in proc.stdout
+
+
+def test_a_regression_can_also_be_suspect(tmp_path):
+    proc, merged = _suspect_case(tmp_path, baseline_answers=["Yes.", "Yes.", "No, not by itself."],
+                                 after_answers=ECHOES_THE_TASK)
+    assert proc.returncode == 4  # baseline 2/3 (the "Yes." answers don't contain "by itself")
+    assert merged["scenarios"][0]["verdict"] == "regressed" and merged["scenarios"][0]["suspect"]
+
+
 # --- scenario_critic_run.py -----------------------------------------------------------------
 
 
@@ -288,6 +454,14 @@ def test_critic_runs_isolated_without_tools_on_a_verbatim_package(tmp_path, fake
     assert "--disable-slash-commands" in argv and argv[argv.index("--tools") + 1] == ""
     assert call["cwd_listing"] == []
     assert "the spec" in call["stdin"] and "the plan" in call["stdin"] and '"id": "S1"' in call["stdin"]
+    # the package states what the blind consumer actually has, from the same
+    # constants blind_run.py starts it with — not a second, hand-written copy
+    import blind_run  # noqa: E402 (scripts/ was added to sys.path above)
+    for kind, tools in blind_run.TOOLS_BY_KIND.items():
+        assert kind in call["stdin"]
+        if tools:
+            assert ", ".join(tools) in call["stdin"]
+    assert "no MCP" in call["stdin"] or "no MCP servers" in call["stdin"]
     merged = json.loads((tmp_path / "critic" / "critique-merged.json").read_text(encoding="utf-8"))
     assert merged["plan_level"] is True and merged["severity_counts"]["critical"] == 1
 
@@ -295,7 +469,10 @@ def test_critic_runs_isolated_without_tools_on_a_verbatim_package(tmp_path, fake
 def test_mechanical_leak_findings_are_merged_next_to_the_critics_own(tmp_path, fake_env):
     write_json(tmp_path / "scenarios" / "S1.json", {
         "id": "S1", "requirement": "R1", "tier": 2, "surface": {"kind": "doc", "paths": ["d.md"]},
-        "task": "Say 603.5.", "expect": {"matches": [r"603\.5"]}})
+        "task": "Say 603.5.", "expect": {"matches": [r"603\.5"]},
+        "controls": [
+            {"outcome": "pass", "answer_text": "It's 603.5 meters."},
+            {"outcome": "fail", "answer_text": "I don't know."}]})
     proc = _critic(tmp_path, fake_env)
     merged = json.loads((tmp_path / "critic" / "critique-merged.json").read_text(encoding="utf-8"))
     assert proc.returncode == 0
@@ -395,4 +572,46 @@ def test_code_state_is_the_commit_the_branch_had_at_the_time(tmp_path):
     assert proc.returncode == 0, proc.stderr
     code_section = (tmp_path / "case.md").read_text(encoding="utf-8").split("# [case] Code state")[1]
     assert "— before" in code_section and "— after" not in code_section
+
+
+# --- rundir_archive.py (agent-autonomous-prompt-engineer#5: a failed run's <rundir> used to
+#     be deleted with the worktree, unrecoverably — see tests/fixtures/incident-386/README.md) --
+
+
+def test_rundir_archive_copies_the_run_dir_outside_the_worktree(tmp_path):
+    rundir = tmp_path / "worktree" / ".ape" / "386-1"
+    (rundir / "scenarios").mkdir(parents=True)
+    (rundir / "scenarios" / "S1.json").write_text("{}", encoding="utf-8")
+    (rundir / "plan.md").write_text("the plan\n", encoding="utf-8")
+    archive_root = tmp_path / "archive"
+
+    proc = run_script("rundir_archive.py", "--rundir", rundir, "--project", "agent-project-issues",
+                      "--package", "386", "--attempt", "1", env={"APE_ARCHIVE_DIR": str(archive_root)})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ARCHIVE: " in proc.stdout
+    archived = next(archive_root.iterdir())
+    assert archived.name.startswith("agent-project-issues-386-1-")
+    assert (archived / "plan.md").read_text(encoding="utf-8") == "the plan\n"
+    assert (archived / "scenarios" / "S1.json").exists()
+    # the original is untouched — this is a copy, not a move
+    assert (rundir / "plan.md").exists()
+
+
+def test_rundir_archive_refuses_a_target_inside_a_git_checkout(tmp_path):
+    rundir = tmp_path / "worktree" / ".ape" / "386-1"
+    rundir.mkdir(parents=True)
+    repo = tmp_path / "some-repo"
+    (repo / ".git").mkdir(parents=True)
+
+    proc = run_script("rundir_archive.py", "--rundir", rundir, "--project", "p", "--package", "1",
+                      "--attempt", "1", env={"APE_ARCHIVE_DIR": str(repo / "ape-runs")})
+    assert proc.returncode == 1
+    assert "inside a git checkout" in proc.stderr
+
+
+def test_rundir_archive_reports_a_missing_rundir_without_crashing(tmp_path):
+    proc = run_script("rundir_archive.py", "--rundir", tmp_path / "nope", "--project", "p",
+                      "--package", "1", "--attempt", "1",
+                      env={"APE_ARCHIVE_DIR": str(tmp_path / "archive")})
+    assert proc.returncode == 1 and "not a directory" in proc.stderr
 

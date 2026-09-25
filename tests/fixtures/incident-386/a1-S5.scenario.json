@@ -1,0 +1,23 @@
+{
+  "id": "S5",
+  "requirement": "R5",
+  "tier": 2,
+  "surface": {
+    "kind": "skill",
+    "paths": [
+      "skills/project-issues/SKILL.md"
+    ]
+  },
+  "task": "On GitLab I want to open a merge request from feature/login into main using the PR tools in this session. I am not sure I ever pushed any work to feature/login beyond what main already has. What happens on GitLab if I just open it like that, and what can I check with the tools first, before creating anything?",
+  "expect": {
+    "selects": "project-issues",
+    "matches": [
+      "(?i)\\bget_ref\\b[^\\n]{0,200}(feature/login|\\bmain\\b)[^\\n]{0,200}(feature/login|\\bmain\\b)|(feature/login|\\bmain\\b)[^\\n]{0,200}\\bget_ref\\b[^\\n]{0,200}(feature/login|\\bmain\\b)|(feature/login|\\bmain\\b)[^\\n]{0,200}(feature/login|\\bmain\\b)[^\\n]{0,200}\\bget_ref\\b",
+      "(?i)(same|identical|equal|match\\w*)[^.\\n]{0,80}\\b(sha|commit)s?\\b|\\b(sha|commit)s?\\b[^.\\n]{0,80}(same|identical|equal|match\\w*)|compar\\w*[^.\\n]{0,80}\\b(sha|commit)s?\\b",
+      "(?i)(creat|open)\\w*[^.\\n]{0,160}(can(no|')t|not|won't|never|unable to)\\s+(be\\s+)?merg|(creat|open)\\w*[^.\\n]{0,160}(unmergeable|nothing to merge|empty (mr|merge request|diff))|commits_status|(unmergeable|nothing to merge|empty (mr|merge request))[^.\\n]{0,160}(creat|open)"
+    ],
+    "forbids": [
+      "(?i)gitlab[^.\\n]{0,60}(?<!not )(?<!n't )(?<!never )\\b(refuses?|rejects?|errors? out|fails? to (create|open)|returns? an? (error|422)|won't (let you )?(create|open))\\b"
+    ]
+  }
+}

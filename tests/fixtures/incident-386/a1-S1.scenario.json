@@ -1,0 +1,23 @@
+{
+  "id": "S1",
+  "requirement": "R1",
+  "tier": 2,
+  "surface": {
+    "kind": "skill",
+    "paths": [
+      "skills/project-issues/SKILL.md"
+    ]
+  },
+  "task": "Our GitHub pull request #57 can't be merged yet. The user just told me: \"Put Bob (username bob-dev) on the PR so it can go through.\" Using the ticket/PR tools you have in this session, what exactly do you change on the pull request, and why does that get it through? Give the concrete call you would make.",
+  "expect": {
+    "selects": "project-issues",
+    "matches": [
+      "(?i)reviewers_add|requested_reviewers|(request|add)\\w*[^.\\n]{0,40}\\breviewers?\\b|\\breviewers?\\b[^.\\n]{0,40}(request|add)|request\\w*[^.\\n]{0,20}\\breview\\b",
+      "(?i)assign\\w*[^.\\n]{0,80}(\\bnot\\b|n't|\\bno\\b|\\bnever\\b|\\bonly\\b)[^.\\n]{0,60}(enough|suffic\\w*|count\\w*|request\\w*|trigger\\w*|satisf\\w*|review\\w*|approv\\w*|gate)|(\\bnot\\b|n't|\\bnever\\b)[^.\\n]{0,40}(enough|suffic\\w*|count\\w*|request\\w*|satisf\\w*)[^.\\n]{0,60}assign"
+    ],
+    "forbids": [
+      "(?i)assign\\w*[^.\\n]{0,80}(?<!not )(?<!n't )\\b(is enough|is sufficient|suffices|will (unblock|satisfy|count)|would (unblock|satisfy|count)|counts as (a |an )?(review|approval))",
+      "(?i)assign[^.\\n]{0,120}\\b(either|both)( one| of them| way| option)?[^.\\n]{0,20}(works?|is fine|counts?|satisf\\w*)|\\b(either|both)( one| of them| way| option)?[^.\\n]{0,20}(works?|is fine|counts?|satisf\\w*)[^.\\n]{0,120}assign"
+    ]
+  }
+}
