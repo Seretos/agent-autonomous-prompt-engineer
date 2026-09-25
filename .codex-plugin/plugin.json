@@ -5,7 +5,7 @@
   "author": {
     "name": "Arne von Appen"
   },
-  "repository": "https://github.com/Seretos/agent-autonomous-prompt-engineer",
+  "repository": "https://github.com/seretos-agents/agent-autonomous-prompt-engineer",
   "skills": "./skills",
   "interface": {
     "displayName": "Agent Autonomous Prompt Engineer",

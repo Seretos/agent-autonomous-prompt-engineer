@@ -105,7 +105,7 @@ Scripts force UTF-8 on stdout/stderr: a piped stdout on Windows defaults to the 
 
 ## Release
 
-- **Release is orphan-branch + marketplace dispatch.** `release.yml` (manual: Actions → release → `version=X.Y.Z`) stamps the version, force-pushes an orphan `release` branch holding only install-ready files and POSTs a dispatch (`category: skill`) to `Seretos/agent-marketplace`. `main` and `release` share no history. Clients install at the tag `agent-autonomous-prompt-engineer--vX.Y.Z`.
+- **Release is orphan-branch + marketplace dispatch.** `release.yml` (manual: Actions → release → `version=X.Y.Z`) stamps the version, force-pushes an orphan `release` branch holding only install-ready files and POSTs a dispatch (`category: skill`) to `seretos-agents/modular-software-factory`. `main` and `release` share no history. Clients install at the tag `agent-autonomous-prompt-engineer--vX.Y.Z`.
 - **The stage must ship everything `${CLAUDE_PLUGIN_ROOT}` reaches:** `skills/`, `agents/`, `scripts/`, `hooks/`. The stage step runs `lint_prose.py --root "$STAGE" --all`, which fails the release when a referenced file is missing from the stage, a contract table disagrees with the staged script, or a staged skill/agent file has CRLF.
 - **Required secret:** `ECOSYSTEM_TOKEN` — the one ecosystem-wide secret name (classic PAT, `repo` + `project` scope; ideally an org-level secret).
 - **`assets/icon.png` and `description.md` are release artifacts, not just repo files:** the dispatch payload sends `raw.githubusercontent.com/${repo}/${TAG}/…` URLs for both, so they must live on the orphan `release` branch at the tagged commit.

@@ -2,15 +2,15 @@
 
 A Claude Code **skill + agents** plugin. It takes **one work package whose change is prose that a model executes** — a skill, an agent definition, a prompt, tool documentation, an `AGENTS.md` — from a prepared worktree to a pull request with a **green CI pipeline**, headless, without asking a human.
 
-It is the sibling of [`agent-autonomous-developer`](https://github.com/Seretos/agent-autonomous-developer): same caller (`agent-ticket-orchestrator`), same invocation, same `adev:event` ticket comments — but evidence that fits prose. Nothing executes a skill file, so every "test" of one is a string comparison; this plugin writes none. No RED phase, no test critic, no test that asserts a phrase exists in a prose file.
+It is the sibling of [`agent-autonomous-developer`](https://github.com/seretos-agents/agent-autonomous-developer): same caller (`agent-ticket-orchestrator`), same invocation, same `adev:event` ticket comments — but evidence that fits prose. Nothing executes a skill file, so every "test" of one is a string comparison; this plugin writes none. No RED phase, no test critic, no test that asserts a phrase exists in a prose file.
 
 No binaries, no MCP server. Scripts need Python ≥ 3.9 and the `claude` CLI; hooks need Node.
 
 ## Install
 
 ```
-/plugin marketplace add Seretos/agent-marketplace
-/plugin install agent-autonomous-prompt-engineer@agent-marketplace
+/plugin marketplace add seretos-agents/modular-software-factory
+/plugin install agent-autonomous-prompt-engineer@modular-software-factory
 ```
 
 `agent-project-issues` is declared as a dependency and installed with it.
