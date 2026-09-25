@@ -88,9 +88,21 @@ The gates on the `rounds:` line are this plugin's own:
 | `rebase` | 3 | 3 | Phase R conflict rounds |
 <!-- /ape:contract -->
 
-Secure the work first (*Turn-end discipline*), then post exactly **one**
-terminal event, then end your turn. A process that ends without one counts as
-`failed` on the caller's side.
+Secure the work first (*Turn-end discipline*), then **archive `<rundir>`**:
+
+```
+python <scripts>/rundir_archive.py --rundir <rundir> --project <project_id> --package <package> --attempt <attempt>
+```
+
+`worktree_remove` deletes `<rundir>` with the worktree the moment this attempt
+ends; on `agent-project-issues#386`'s two `failed` runs this is exactly what
+happened (`agent-autonomous-prompt-engineer#5`) — the run's scenarios and
+evidence were unrecoverable, only a session transcript and a lucky cache hit
+survived. A failed archive is not a stop: carry `archive failed: <first line
+of stderr>` into the event text instead of `ARCHIVE:`. Then post exactly
+**one** terminal event — its text names `ARCHIVE: <path>` — then end your
+turn. A process that ends without one counts as `failed` on the caller's
+side.
 
 ### Progress or stagnation
 
@@ -301,8 +313,11 @@ For each scenario file, one foreground call, `timeout` 600000:
 python <scripts>/blind_run.py --scenario <file> --root <worktree_path> --git-ref <base_sha> --label baseline --out-dir <rundir>/evidence --model <consumer_model> --samples <samples>
 ```
 
-Exit 1 (an invalid or crashed sample) → run it once more with `--no-cache`;
-still 1 → that scenario's baseline is an `i` on `evidence`. Then
+Exit 1 (an invalid or crashed sample) → run it once more with `--retry-invalid`
+(reruns only the invalid samples; the valid ones and, once the retry is fully
+valid, the whole result are kept — never `--no-cache`, which recomputes every
+sample and, before ticket #3, cached none of them either); still 1 → that
+scenario's baseline is an `i` on `evidence`. Then
 
 ```
 python <scripts>/evidence_merge.py --scenarios-dir <rundir>/scenarios --results-dir <rundir>/evidence --out <rundir>/baseline.json --baseline-only
@@ -337,13 +352,19 @@ baseline, the same `blind_run.py` call with `--label after` and **no**
 `--git-ref`. Then
 
 ```
-python <scripts>/evidence_merge.py --scenarios-dir <rundir>/scenarios --results-dir <rundir>/evidence --out <rundir>/evidence-merged.json
+python <scripts>/evidence_merge.py --scenarios-dir <rundir>/scenarios --results-dir <rundir>/evidence --out <rundir>/evidence-merged.json --repairs-file <rundir>/scenario-repairs.json
 ```
 
+(the repairs file need not exist yet; a missing one reads as "nothing
+repaired this attempt".)
+
 - exit 0 (`RESULT: pass`) → post `tests-green`: the table the script printed,
-  and "evidence delta only — CI decides".
+  and "evidence delta only — CI decides". Name any `[repaired]` scenario.
+- exit 4 (`RESULT: repair`) → **Phase 4e**, below. Not a round on any gate:
+  a scenario that mechanically rejects every right answer it was shown is not
+  evidence that the prose is wrong.
 - exit 3 (`RESULT: infra`) → bump `evidence i`; re-run the invalid scenarios
-  with `--no-cache`.
+  with `--retry-invalid`.
 - exit 1 (`RESULT: fail`) → bump `evidence f`, stagnation check on
   `evidence-merged.json`. On `progress` and `CAP: open`: fresh `prose-writer`
   fix round with the **result files** (`<rundir>/evidence/<id>.after.json`) of
@@ -353,6 +374,44 @@ python <scripts>/evidence_merge.py --scenarios-dir <rundir>/scenarios --results-
   only what the writer touched is paid for again.
 - `evidence` cap reached → `failed`: the change could not be shown to improve
   on the old text. Quote the last table.
+
+## Phase 4e — scenario repair
+
+`evidence_merge.py`'s `RESULT: repair` means at least one scenario is
+`suspect`: every after-sample it rejected failed only on `forbids` or
+`could_complete` — never on the content of the answer (`matches`, `selects`,
+`fields`). Such a scenario cannot become `improved` by any change to the
+prose; the defect is in the scenario. This is the direct fix for
+`agent-project-issues#386`'s two `failed` runs (both attempts stagnated on
+exactly this shape of finding, reported as `major` and never repaired —
+`agent-autonomous-prompt-engineer#5`).
+
+This is **not** an `evidence` round: do not bump the gate, do not run the
+stagnation check on it.
+
+1. Read every `REPAIR: <id>` line. `Write` the ids into
+   `<rundir>/scenario-repairs.json` (a flat JSON list; append to whatever the
+   file already holds — a scenario is repaired **at most once per attempt**,
+   which is exactly what `--repairs-file` enforces: once an id is listed,
+   `evidence_merge.py` reports it as a real finding instead of `repairable`
+   next time).
+2. Dispatch `prose-planner` (fresh, unnamed) with `repair=<the ids>`, the
+   **paths** of `<rundir>/evidence-merged.json` and, per repaired id,
+   `<rundir>/evidence/<id>.after.json` (and `.baseline.json`). It rewrites
+   **only** those scenario files — same protocol as any other round
+   (`STATUS: PLAN_FINAL`/`NEEDS_INPUT`), but nothing else in `<rundir>`
+   changes and the tier selector does not re-run (a scenario repair never
+   changes a requirement's kind).
+3. A normal Phase 3 round (the `scenario-critic` gate, same caps, same
+   stagnation rule) over the full `<rundir>/scenarios/`, so a repaired
+   scenario gets the same honesty check any other scenario does.
+4. Phase 4a (baseline) and 4d (after) again, **for the repaired ids only**;
+   every other scenario's artifact is unchanged, so it hits the cache and
+   costs nothing.
+5. Back to the top of 4d's branching on the new `evidence_merge.py` result.
+   A scenario that is suspect again is now `id in scenario-repairs.json`, so
+   it reports as a real `unchanged`/`regressed` finding (with `suspect: true`
+   kept) instead of `repair` — evidence, or the makings of one, either way.
 
 ## Phase 5 — reviewer
 
@@ -377,8 +436,9 @@ Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
    `failed`.
 4. **PR body:** summary · plan recap · **Evidence** (the `evidence_merge.py`
    table: per scenario tier, baseline → after, verdict, consumer model, cache
-   hit/miss) · limits of the rebuilt cases (the plan's `LIMIT:` lines) ·
-   review verdict · **`## Not covered by tests`** — one row per requirement
+   hit/miss, `[repaired]` marked scenarios named with what was wrong with the
+   original scenario) · limits of the rebuilt cases (the plan's `LIMIT:`
+   lines) · review verdict · **`## Not covered by tests`** — one row per requirement
    that merged without executed evidence: requirement, tier, reason. It holds
    every `prose-other` requirement, every scenario saturated at the baseline
    or `saturated` after, and anything the critic's accepted majors left
@@ -420,7 +480,8 @@ Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
   `SendMessage`); `Read`/`Write` for `<rundir>` files only; `Bash` for the git
   calls named above, `cp` for plan archives, and these scripts:
   `event_block.py`, `tier_select.py`, `lint_prose.py`, `blind_run.py`,
-  `evidence_merge.py`, `stagnation_check.py`, `ci-wait-pipeline.sh`; and these
+  `evidence_merge.py`, `stagnation_check.py`, `rundir_archive.py`,
+  `ci-wait-pipeline.sh`; and these
   MCP calls: `list_projects`, `add_comment`, `create_pr`, `list_prs`,
   `update_pr`, `list_pipeline_runs`, `get_pipeline_run`,
   `get_pipeline_step_log`. No `merge_pr`: merging is the caller's.

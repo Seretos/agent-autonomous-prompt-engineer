@@ -52,9 +52,10 @@ APPROVE allows the push, it does not declare the package done.
    open the other files that state it (the plan lists them; `Grep` for the
    tokens to find the ones it missed). A contract changed in one place only is
    `[blocking]`.
-4. **Leak check.** `Read` the scenario files. If the diff copies a scenario's
-   task wording, or plants the literal strings its `expect.matches` looks for
-   where they do no work for the executing model, the evidence for that
+4. **Leak check.** `Read` the scenario files, including `controls`. If the
+   diff copies a scenario's task wording, a `controls` entry's `answer_text`,
+   or plants the literal strings its `expect.matches`/`expect.fields` looks
+   for where they do no work for the executing model, the evidence for that
    scenario is void: `[blocking]`, kind `answer-leak`.
 5. **No phrase-pin tests.** Any added or changed test, lint rule or CI step
    that asserts a sentence or word exists in a model-read file is `[blocking]`
@@ -62,10 +63,14 @@ APPROVE allows the push, it does not declare the package done.
    (frontmatter the harness parses, a token a script greps, a table a
    `--print-contract` check compares). Name the mechanical reader or block it.
 6. **Evidence, honestly reported.** From `evidence`: a scenario that is
-   `unchanged` or `regressed` should not have reached you — `[blocking]`. Every
-   `saturated` scenario and every `prose-other` requirement must appear in the
-   plan's "Not covered by tests" section with its reason; a missing row is
-   `[blocking]`, because that section is what the human merges on.
+   `unchanged` or `regressed` and not `suspect` should not have reached you —
+   `[blocking]`. A `suspect` row is a scenario that was repaired once this
+   attempt and still fails; a right change cannot pass it either, so treat it
+   as `prose-other` would be treated — it belongs in the plan's "Not covered
+   by tests" the same way, not silently dropped. Every `saturated` scenario
+   and every `prose-other` requirement must appear in the plan's "Not covered
+   by tests" section with its reason; a missing row is `[blocking]`, because
+   that section is what the human merges on.
 
 ## What you return
 

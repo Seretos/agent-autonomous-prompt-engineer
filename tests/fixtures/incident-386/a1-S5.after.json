@@ -1,0 +1,67 @@
+{
+  "label": "after",
+  "model": "sonnet",
+  "samples": [
+    {
+      "sample": 1,
+      "valid": true,
+      "invalid_reasons": [],
+      "selected": [
+        "surface-under-test:project-issues",
+        "surface-under-test:project-issues"
+      ],
+      "answer_text": "I'll check the project-issues skill since it covers merge requests on GitLab.\nI have the GitLab-specific guidance from the project-issues skill, but I want to flag a limitation before answering: this session doesn't expose the underlying `get_ref`/`create_pr`/`list_projects` calls as tools I can actually invoke — the skill only returned its reference documentation both times I called it, not live GitLab data. So I can't check your actual `feature/login` branch for you right now; I can only tell you what the documented behavior is and what you should run yourself.\n\n**What happens if you open the MR on GitLab with no real diff:**\n\n- GitLab does **not** refuse the call the way GitHub does. It will create the merge request even if `feature/login` and `main` point at the exact same commit.\n- The created MR's `detailed_merge_status` will be `\"commits_status\"`, and it stays unmergeable until `feature/login` actually has commits ahead of `main`.\n- Critically: a \"successful\" `create_pr` call on GitLab is **not proof** the branches were right — GitLab will happily create an empty/no-op MR that just sits there unmergeable.\n- Don't rely on the `mergeable` field either — GitLab's `mergeable` is `null` for every state except `\"mergeable\"`, so check `detailed_merge_status` specifically.\n\n**What to check first, before creating anything:**\n\n1. Call `get_ref` on `feature/login` (the head) and separately on `main` (the base) for the project.\n   - If `get_ref` errors on `feature/login`, the branch isn't pushed (or the name is wrong) — fix that before doing anything else.\n   - If both resolve to the **same commit sha**, `feature/login` has nothing ahead of `main` — don't open the MR yet.\n   - If they resolve to **different** shas, that only proves the branches aren't identical — it does **not** prove `feature/login` is ahead. It could be behind `main` instead. `get_ref` alone can't distinguish \"ahead\" from \"behind\"; you'd need to actually look at the commit history/diff to be sure.\n\nSince I can't run `get_ref` for you in this session, I'd suggest running it yourself (or checking `git log main..feature/login` locally if you have the repo) before opening the MR — that's the direct way to see whether there are any commits on `feature/login` that aren't already on `main`.\nExplained GitLab's documented behavior (creates an unmergeable MR with detailed_merge_status \"commits_status\" rather than refusing, unlike GitHub's 422) and the pre-check (get_ref on both feature/login and main; same sha means nothing ahead, different sha only proves non-identical, not that head is ahead). Flagged that the actual pulls/pipelines tools (get_ref, create_pr, list_projects) were not invocable in this session — only the skill's reference documentation was returned — so no live check of the user's actual branch state could be performed.",
+      "structured": {
+        "could_complete": true,
+        "selected": "surface-under-test:project-issues",
+        "answer": "Explained GitLab's documented behavior (creates an unmergeable MR with detailed_merge_status \"commits_status\" rather than refusing, unlike GitHub's 422) and the pre-check (get_ref on both feature/login and main; same sha means nothing ahead, different sha only proves non-identical, not that head is ahead). Flagged that the actual pulls/pipelines tools (get_ref, create_pr, list_projects) were not invocable in this session — only the skill's reference documentation was returned — so no live check of the user's actual branch state could be performed.",
+        "missing": [
+          "Live execution access to the project-issues MCP tools (list_projects, get_ref, create_pr) - only skill documentation was returned, not actual GitLab data.",
+          "Which GitLab project/repo this refers to."
+        ],
+        "confusing": [
+          "Invoking the Skill tool a second time with tool-name-like args (e.g. list_projects) did not execute that underlying MCP tool - it just re-returned the same skill documentation, making it unclear whether/how the documented tools are actually callable in this session."
+        ]
+      }
+    },
+    {
+      "sample": 2,
+      "valid": true,
+      "invalid_reasons": [],
+      "selected": [
+        "surface-under-test:project-issues"
+      ],
+      "answer_text": "I'll check what MR/PR tooling is available for GitLab in this session.\nHere's what applies to your situation on GitLab specifically:\n\n**What happens if you open it anyway:** GitLab does **not** refuse a merge request where the head branch has no commits ahead of the base (unlike GitHub, which returns a 422 and creates nothing). GitLab will happily create the MR, but its `detailed_merge_status` will read `\"commits_status\"` and the MR will stay unmergeable until `feature/login` actually has commits ahead of `main`. So a \"successful\" `create_pr` call on GitLab doesn't tell you the branches were right — you could end up with an empty, unmergeable MR sitting open.\n\n**What you can check first, before creating anything:**\n- Call `get_ref` on `feature/login` and separately on `main`. \n  - If `get_ref` errors on `feature/login`, the branch either isn't pushed to GitLab or is misspelled — that would confirm your suspicion.\n  - If both resolve but return the **same commit sha**, `feature/login` has nothing ahead of `main` — don't create the MR yet.\n  - If the shas differ, that only proves the branches aren't identical — it doesn't prove `feature/login` is *ahead*; it could just as well be behind.\n\nI don't have a project ID or GitLab project name from you yet, so I can't run `get_ref` right now — tell me which project (or I can run `search_projects`/`list_projects` to find it) and I'll check both branches before you decide whether to open the MR.\nExplained GitLab's actual behavior and the pre-check available via the project-issues MCP tools:\n\n1. GitLab does not block MR creation when head has no commits ahead of base (unlike GitHub, which returns a 422 and creates nothing). GitLab will create the MR, but its detailed_merge_status will be commits_status, and it stays unmergeable until feature/login has real commits ahead of main. So a successful create_pr call is not proof the branches were correct.\n2. Before creating anything, call get_ref on feature/login and on main: an error on feature/login means the branch is not pushed or is misspelled; if both resolve to the same commit sha, feature/login has nothing ahead of main and the MR should not be created yet; if the shas differ, that only proves the branches are not identical, not that feature/login is ahead (it could be behind).\n\nDid not fabricate a project ID or run get_ref, since the user has not specified which GitLab project this is; asked for that before executing the actual check.",
+      "structured": {
+        "answer": "Explained GitLab's actual behavior and the pre-check available via the project-issues MCP tools:\n\n1. GitLab does not block MR creation when head has no commits ahead of base (unlike GitHub, which returns a 422 and creates nothing). GitLab will create the MR, but its detailed_merge_status will be commits_status, and it stays unmergeable until feature/login has real commits ahead of main. So a successful create_pr call is not proof the branches were correct.\n2. Before creating anything, call get_ref on feature/login and on main: an error on feature/login means the branch is not pushed or is misspelled; if both resolve to the same commit sha, feature/login has nothing ahead of main and the MR should not be created yet; if the shas differ, that only proves the branches are not identical, not that feature/login is ahead (it could be behind).\n\nDid not fabricate a project ID or run get_ref, since the user has not specified which GitLab project this is; asked for that before executing the actual check.",
+        "confusing": [],
+        "could_complete": true,
+        "missing": [
+          "Which GitLab project (project_id or name) to run get_ref against, needed to actually perform the check rather than just describe it."
+        ],
+        "selected": "surface-under-test:project-issues skill; get_ref is the tool identified for the check"
+      }
+    },
+    {
+      "sample": 3,
+      "valid": true,
+      "invalid_reasons": [],
+      "selected": [
+        "surface-under-test:project-issues",
+        "surface-under-test:project-issues"
+      ],
+      "answer_text": "I looked into this via the project-issues skill, but I should be upfront about what I could and couldn't do: the skill gave me its documentation on how the GitLab merge-request tools behave, but the actual callable tools (`get_ref`, `list_projects`, `create_pr`, etc.) were not exposed to me in this session — invoking the skill only returned its instructions twice, not live GitLab data. So I can't check your actual `feature/login`/`main` state or open anything for you right now. Here's what the documentation says, which answers your question directly:\n\n**What happens if you just call `create_pr` (feature/login → main) without checking first:**\nGitLab will let you create the merge request even if `feature/login` has nothing new. It doesn't refuse the way GitHub does (GitHub returns a 422 and creates nothing when head and base are identical). On GitLab, the MR gets created, but its `detailed_merge_status` comes back as `commits_status`, and it stays unmergeable until `feature/login` actually has commits ahead of `main`. So you'd end up with a real, visible MR that can't be merged — not an error, just a stuck MR sitting there.\n\n**What to check first, before creating anything:**\nCall `get_ref` on both branches:\n- `get_ref(project_id, \"feature/login\")`\n- `get_ref(project_id, \"main\")`\n\nCompare the returned `sha` values:\n- If `get_ref` errors on `feature/login`, the branch either isn't pushed or is misspelled — fix that before doing anything else.\n- If both shas match, `feature/login` has nothing ahead of `main` — exactly the case you're worried about. Don't call `create_pr` yet.\n- If the shas differ, that only proves the branches aren't identical — it doesn't prove `feature/login` is *ahead*. It could be behind. So a difference alone isn't enough to conclude the MR would be meaningful.\n\nSince I don't have the live tools here, I can't run those `get_ref` checks for you — you'd need to run them yourself (or in a session where those tools are actually connected) before opening the MR.\ntest",
+      "structured": {
+        "could_complete": false,
+        "selected": "surface-under-test:project-issues",
+        "answer": "test",
+        "missing": [
+          "a"
+        ],
+        "confusing": [
+          "b"
+        ]
+      }
+    }
+  ]
+}

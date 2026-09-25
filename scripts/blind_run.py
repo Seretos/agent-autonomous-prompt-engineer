@@ -25,21 +25,45 @@ ISOLATION (ticket item 5). Each sample runs with
   * a leak check over the sample's own transcript (leak_check.py): a sample
     that reached outside the surface is INVALID, which is neither pass nor fail.
 
-COST (ticket item 3). Results are cached under APE_CACHE_DIR (default
-~/.claude/ape-cache), keyed by a hash of the artifact under test plus the
-scenario's input, the model and the sample count. The baseline of a ticket is
-stable across every writer round and every retry, so after the first run a
-ticket pays only for "after". A hit is reported as `CACHE: hit`. An artifact
-that does not exist at the requested ref is recorded as `absent` and costs
-nothing: a surface that is not there is found by nobody.
+COST. Results are cached under APE_CACHE_DIR (default ~/.claude/ape-cache),
+keyed by a hash of the artifact under test plus the scenario's input (task,
+`fields`' questions — what the consumer is asked, never `expect`), the model
+and the sample count. The baseline of a ticket is stable across every writer
+round and every retry, so after the first run a ticket pays only for "after".
+A hit is reported as `CACHE: hit`. An artifact that does not exist at the
+requested ref is recorded as `absent` and costs nothing: a surface that is not
+there is found by nobody. A complete, fully valid run is ALWAYS cached — on a
+plain run, after `--no-cache` (which only skips the *read*: fixed here, ticket
+#3 — the guard used to also gate the write, so a run that only existed
+because `--no-cache` bypassed a stale cache was never itself cached), and
+after `--retry-invalid`.
+
+`--retry-invalid` reruns only the samples an earlier `<id>.<label>.json` in
+`--out-dir` marked invalid (crashed or leaked), keeping the valid ones —
+instead of the whole scenario, cache or not. A missing result file, or one
+whose `cache_key` does not match this call (the artifact or the scenario
+changed), is a normal full run. This replaces the "rerun with `--no-cache`"
+advice `SKILL.md` used to give: rerunning the *whole* scenario paid for
+already-valid samples again and, before the fix above, was never cached
+either (ticket #3).
 
 Usage:
   blind_run.py --scenario <json> --root <worktree> --label <baseline|after>
                --out-dir <dir> [--git-ref <ref>] [--samples 3] [--model sonnet]
-               [--timeout 420] [--no-cache]
+               [--timeout 420] [--no-cache] [--retry-invalid]
+  blind_run.py --print-contract consumer
 
 `--git-ref` reads the artifact from that ref (`git show <ref>:<path>`) instead
 of the working tree — that is how the baseline is taken without a checkout.
+
+`--print-contract consumer` prints, as text, exactly what a blind consumer has
+— the tools per surface kind, the schema shape, the isolation guarantees. The
+planner and `scenario_critic_run.py`'s package both read it from here, so a
+task that assumes tools or live data the consumer does not have (seen on
+agent-autonomous-prompt-engineer#5: a `skill` task asking for "the ticket/PR
+tools you have in this session", when the consumer has only
+`Skill, Read, Glob, Grep`) is checked against the same source the harness
+actually starts the consumer with, not a second description of it.
 
 Writes <out-dir>/<scenario-id>.<label>.json (+ one .jsonl transcript per
 sample). Exit 0 when every sample is valid evidence, 1 when any sample is
@@ -76,24 +100,74 @@ TOOLS_BY_KIND = {
     "doc": [],
     "agent-step": [],
 }
-CONSUMER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "could_complete": {"type": "boolean"},
-        "selected": {"type": "string",
-                     "description": "the skill, subagent type or tool you relied on, or \"none\""},
-        "answer": {"type": "string"},
-        "missing": {"type": "array", "items": {"type": "string"},
-                    "description": "information you needed and were not given"},
-        "confusing": {"type": "array", "items": {"type": "string"},
-                      "description": "things that were there but hard to use correctly"},
-    },
-    "required": ["could_complete", "selected", "answer", "missing", "confusing"],
+CONSUMER_BASE_PROPERTIES = {
+    "could_complete": {"type": "boolean"},
+    "selected": {"type": "string",
+                 "description": "the skill, subagent type or tool you relied on, or \"none\""},
+    "answer": {"type": "string"},
+    "missing": {"type": "array", "items": {"type": "string"},
+                "description": "information you needed and were not given"},
+    "confusing": {"type": "array", "items": {"type": "string"},
+                  "description": "things that were there but hard to use correctly"},
 }
+CONSUMER_BASE_REQUIRED = ["could_complete", "selected", "answer", "missing", "confusing"]
 CONSUMER_BRIEF = (
     "Do the task below using only what is available to you in this session. "
     "Do not guess facts you were not given: if something you need is missing, "
     "say so instead of inventing it.\n\n")
+
+
+def consumer_schema(scenario):
+    """The JSON schema a blind consumer answers with — `CONSUMER_BASE_*` plus,
+    when the scenario declares `fields`, one required sub-property per field
+    (`expect.fields` in evidence_merge.score_sample compares against this
+    exactly, instead of a negation regex hunting the fact out of `answer`)."""
+    fields = scenario.get("fields") or {}
+    schema = {"type": "object", "properties": dict(CONSUMER_BASE_PROPERTIES),
+              "required": list(CONSUMER_BASE_REQUIRED)}
+    if fields:
+        properties = {}
+        for name, spec in fields.items():
+            prop = {"type": "boolean"} if spec.get("type") == "boolean" else {"enum": spec.get("enum")}
+            prop["description"] = spec.get("question", "")
+            properties[name] = prop
+        schema["properties"]["fields"] = {"type": "object", "properties": properties,
+                                           "required": list(fields)}
+        schema["required"].append("fields")
+    return schema
+
+
+def consumer_contract():
+    """Text description of what a blind consumer has, built from the same
+    constants the isolated process is actually started with — never restated
+    by hand in a skill or agent file. `--print-contract consumer` and
+    `scenario_critic_run.assemble_package` both read this."""
+    lines = ["WHAT THE BLIND CONSUMER HAS", "",
+             "Isolation: " + ", ".join(["--setting-sources \"\"", "--strict-mcp-config"])
+             + " — no user/project settings, no MCP servers, no network access beyond "
+               "the model call itself, no repository (cwd is a fresh empty directory "
+               "outside every git checkout), --model pinned explicitly.", ""]
+    lines.append("Tools available, by `surface.kind`:")
+    for kind, tools in TOOLS_BY_KIND.items():
+        lines.append(f"  {kind}: {', '.join(tools) if tools else '(none)'}")
+    lines += ["", "`skill`/`agent`/`doc` scenarios: the consumer answers a JSON schema "
+                   "(`could_complete`, `selected`, `answer`, `missing`, `confusing`, plus "
+                   "one boolean/enum sub-field of `fields` per scenario field, each with "
+                   "its own `question` as the field's description). "
+                   "`agent-step` (tier 1) scenarios get no schema: the replayed step's own "
+                   "contract decides its output format, and the case input arrives as the "
+                   "user turn with the step's own file as the system prompt.",
+              "",
+              "`answer_text` (what `expect.matches`/`expect.forbids` are checked against) is "
+              "every assistant text block plus, if present, `structured.answer`. `selected` "
+              "comes from the transcript's own `Skill` tool calls for a `skill` surface, "
+              "never from what the consumer claims to have used.",
+              "",
+              "A task that needs a tool, MCP call or live data outside this list will not be "
+              "completed: the consumer correctly reports `could_complete: false` instead of "
+              "inventing an answer — that is not evidence the surface under test is missing "
+              "anything (agent-autonomous-prompt-engineer#5)."]
+    return "\n".join(lines) + "\n"
 
 
 def read_artifact(root, rel, git_ref):
@@ -189,7 +263,7 @@ def run_sample(index, kind, scenario, artifacts, model, timeout, out_prefix):
             args += ["--system-prompt", system_prompt]
             prompt_via = "argv"
         else:
-            args += ["--json-schema", json.dumps(CONSUMER_SCHEMA)]
+            args += ["--json-schema", json.dumps(consumer_schema(scenario))]
 
         argv, rc, stdout, stderr = run_isolated(args, stdin_text, workdir, timeout)
         with open(transcript_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -199,11 +273,14 @@ def run_sample(index, kind, scenario, artifacts, model, timeout, out_prefix):
         roots = [workdir] + ([plugin_dir] if plugin_dir else [])
         problems = leak_check.check(events, roots, tools, STAGED_PLUGIN, cwd=workdir)
 
+        last_event_type = events[-1].get("type") if events else None
+        stderr_tail = stderr.strip()[-2000:]
         result = next((e for e in reversed(events) if e.get("type") == "result"), None)
         crashed = rc != 0 or result is None or bool(result.get("is_error"))
         if crashed:
             problems.append({"reason": "crashed",
-                             "what": f"exit {rc}; {stderr.strip()[-300:] or 'no result event'}"})
+                             "what": f"exit {rc}; last_event={last_event_type}; "
+                                     f"{stderr_tail[-300:] or 'no result event'}"})
 
         texts, selected = [], []
         for event in events:
@@ -235,6 +312,8 @@ def run_sample(index, kind, scenario, artifacts, model, timeout, out_prefix):
             "system_prompt_via": prompt_via,
             "transcript": canonical(transcript_path),
             "argv": [a if len(a) < 200 else a[:200] + "…" for a in argv],
+            "last_event_type": last_event_type,
+            "stderr_tail": stderr_tail,
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -247,6 +326,13 @@ def cache_dir():
 
 
 def main(argv):
+    if len(argv) == 3 and argv[1] == "--print-contract":
+        if argv[2] != "consumer":
+            sys.stderr.write(f"unknown contract {argv[2]!r}\n")
+            return 2
+        sys.stdout.write(consumer_contract())
+        return 0
+
     parser = argparse.ArgumentParser(prog="blind_run.py")
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--root", required=True)
@@ -257,6 +343,10 @@ def main(argv):
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--timeout", type=int, default=420)
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--retry-invalid", action="store_true",
+                        help="rerun only the samples an earlier result file marked invalid "
+                             "(crashed or leaked); a missing or non-matching result file "
+                             "falls back to a normal full run")
     args = parser.parse_args(argv[1:])
 
     try:
@@ -283,7 +373,8 @@ def main(argv):
     out_prefix = os.path.join(args.out_dir, f"{scenario['id']}.{args.label}")
     out_path = out_prefix + ".json"
 
-    hasher_input = [RUNNER_VERSION, kind, args.model, str(args.samples), scenario.get("task") or ""]
+    hasher_input = [RUNNER_VERSION, kind, args.model, str(args.samples), scenario.get("task") or "",
+                    json.dumps(scenario.get("fields") or {}, sort_keys=True)]
     if kind == "agent-step":
         with open(case_input_path(scenario), "rb") as fh:
             hasher_input.append(sha256_bytes(fh.read()))
@@ -308,13 +399,39 @@ def main(argv):
         record["samples"] = cached["samples"]
         record["cache"] = "hit"
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.samples) as pool:
-            futures = [pool.submit(run_sample, i + 1, kind, scenario, artifacts,
-                                   args.model, args.timeout, out_prefix)
-                       for i in range(args.samples)]
-            record["samples"] = [f.result() for f in futures]
-        # Only a complete, fully valid run is worth replaying later.
-        if all(s["valid"] for s in record["samples"]) and not args.no_cache:
+        retried = None
+        if args.retry_invalid and os.path.isfile(out_path):
+            try:
+                with open(out_path, encoding="utf-8") as fh:
+                    previous = json.load(fh)
+            except (OSError, ValueError, json.JSONDecodeError):
+                previous = None
+            if previous and previous.get("cache_key") == cache_key and previous.get("samples"):
+                retried = previous["samples"]
+        if retried is not None:
+            redo = [s["sample"] for s in retried if not s.get("valid")]
+            if redo:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(redo)) as pool:
+                    fresh = {i: pool.submit(run_sample, i, kind, scenario, artifacts,
+                                            args.model, args.timeout, out_prefix)
+                             for i in redo}
+                    fresh = {i: f.result() for i, f in fresh.items()}
+                record["samples"] = [fresh.get(s["sample"], s) for s in retried]
+            else:
+                record["samples"] = retried
+            record["cache"] = "retried"
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.samples) as pool:
+                futures = [pool.submit(run_sample, i + 1, kind, scenario, artifacts,
+                                       args.model, args.timeout, out_prefix)
+                           for i in range(args.samples)]
+                record["samples"] = [f.result() for f in futures]
+        # Only a complete, fully valid run is worth replaying later — but
+        # `--no-cache` only bypasses the READ above; the result is always
+        # cached once it earns it (ticket #3: the write used to be gated on
+        # `not args.no_cache` too, so a rerun forced past a stale cache was
+        # never itself cached, and every later round paid for it again).
+        if all(s["valid"] for s in record["samples"]):
             os.makedirs(cache_dir(), exist_ok=True)
             write_json(cache_path, {"samples": record["samples"]})
 

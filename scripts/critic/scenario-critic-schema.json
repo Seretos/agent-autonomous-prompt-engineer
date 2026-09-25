@@ -10,7 +10,8 @@
           "scenario": { "type": "string", "description": "the scenario id the finding is about" },
           "kind": {
             "type": "string",
-            "enum": ["tailored", "answer-leak", "unfalsifiable", "off-requirement", "plan-level"]
+            "enum": ["tailored", "answer-leak", "unfalsifiable", "off-requirement", "plan-level",
+                     "rejects-right-answer"]
           },
           "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
           "violated_criterion": {

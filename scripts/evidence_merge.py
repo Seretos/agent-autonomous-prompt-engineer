@@ -5,10 +5,12 @@ after. Model-free, same philosophy as the developer plugin's
 plan-critic-merge.py: a model between the samples and the decision would be a
 curator, able to read a failed sample charitably.
 
-SCORING, per valid sample — all of:
+SCORING, per valid sample, by `scenario_validate.score_sample` — all of:
   * `expect.selects`   one entry of the sample's `selected` equals the name, or
                        ends with `:<name>` (a plugin-qualified skill name)
   * `expect.matches`   every regex is found in the sample's answer text
+  * `expect.fields`    every named field of `structured.fields` equals the
+                       expected value exactly (see `scenario_validate.py`)
   * `expect.forbids`   no regex is found; a tier-1 scenario's `recorded_wrong`
                        is an implicit forbid
   * the consumer did not report `could_complete: false`
@@ -24,9 +26,28 @@ THE PASS RULE IS A DELTA, NOT AN ABSOLUTE SCORE. rate = passes / valid samples.
   invalid     fewer than half of a side's samples are valid evidence
 An absent baseline artifact (new file) scores 0.0 by construction.
 
-RESULT: pass   every scenario is improved or saturated
-        fail   any scenario is unchanged or regressed
-        infra  any scenario is invalid (and none failed) — an `i` round
+SUSPECT (agent-autonomous-prompt-engineer#5). An `unchanged`/`regressed` row
+whose every failing after-sample fails ONLY on `forbids`/`could_complete` —
+never on `matches`/`selects`/`fields` — never shows a wrong *answer*, only a
+scenario that rejects what it got. `suspect: true` on that row does not
+change its verdict; it is what makes exit 4 / `--repairs-file` below fire.
+
+REPAIR (exit 4, `RESULT: repair`). A suspect scenario not yet named in
+`--repairs-file` is pulled out of `findings` into `repairable` — the pipeline
+repairs the *scenario*, not the prose, and `stagnation_check.py` never sees
+it as a prose finding. Once its id IS in `--repairs-file` (the pipeline ran
+one repair round on it this attempt), it goes back into `findings` as usual,
+with `suspect: true` kept for the reviewer and the PR body — a suspect
+scenario is repaired at most once per attempt, never argued with twice.
+Every row for a repaired id carries `repaired: true`, independent of verdict.
+A missing `--repairs-file` (the first round of an attempt) is an empty list,
+not an error.
+
+RESULT: pass    every scenario is improved or saturated
+        repair  a new repair candidate exists (checked first — repairing a
+                scenario is cheap and orthogonal to any other verdict)
+        fail    any (non-repairable) scenario is unchanged or regressed
+        infra   any scenario is invalid (and none failed) — an `i` round
 
 `findings` in the output is shaped for stagnation_check.py (gate `evidence`).
 
@@ -37,20 +58,19 @@ does not pay for an "after" run and lists the requirement as not covered.
 
 Usage:
   evidence_merge.py --scenarios-dir <dir> --results-dir <dir> --out <json>
-                    [--min-delta 0.0] [--baseline-only]
+                    [--min-delta 0.0] [--baseline-only] [--repairs-file <json>]
   evidence_merge.py --print-contract verdicts
-Exit 0 pass, 1 fail, 3 infra, 2 usage error.
+Exit 0 pass, 1 fail, 3 infra, 4 repair, 2 usage error.
 """
 import argparse
 import glob
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ape_common import write_json  # noqa: E402
-from scenario_validate import forbids_of, load_scenario  # noqa: E402
+from scenario_validate import load_scenario, score_sample  # noqa: E402
 
 # A piped stdout on Windows defaults to the ANSI code page; every consumer of
 # these scripts (the skill, the tests, CI) reads UTF-8.
@@ -59,29 +79,9 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 VERDICTS = ["improved", "saturated", "unchanged", "regressed", "invalid"]
-FLAGS = re.IGNORECASE | re.DOTALL
-
-
-def score_sample(scenario, sample):
-    """List of reasons the sample fails; empty means it passes."""
-    reasons = []
-    expect = scenario.get("expect") or {}
-    text = sample.get("answer_text") or ""
-    selects = expect.get("selects")
-    if selects:
-        chosen = [str(s) for s in sample.get("selected") or []]
-        if not any(c == selects or c.endswith(":" + selects) for c in chosen):
-            reasons.append(f"did not select {selects!r} (selected: {chosen or 'nothing'})")
-    for pattern in expect.get("matches") or []:
-        if not re.search(pattern, text, FLAGS):
-            reasons.append(f"answer does not match {pattern!r}")
-    for pattern in forbids_of(scenario):
-        if re.search(pattern, text, FLAGS):
-            reasons.append(f"answer matches forbidden {pattern!r}")
-    structured = sample.get("structured")
-    if isinstance(structured, dict) and structured.get("could_complete") is False:
-        reasons.append("consumer reported could_complete: false")
-    return reasons
+# A row is `suspect` when every failing after-sample fails on one of these
+# checks only — never on a check that judges the *content* of the answer.
+SCENARIO_SHAPED_CHECKS = {"forbids", "could_complete"}
 
 
 def score_side(scenario, record):
@@ -120,10 +120,23 @@ def verdict_of(baseline, after, min_delta):
     return "unchanged"
 
 
-def merge(scenarios, records, min_delta=0.0):
-    rows, findings = [], []
+def is_suspect(after):
+    """True when every failing after-sample failed only on a check that
+    judges the SCENARIO (a forbid, could_complete) — never one that judges
+    the answer's content (matches, selects, fields). Such a row can never
+    become `improved`: no right answer could pass it."""
+    if not after["failing"]:
+        return False
+    return all(r["check"] in SCENARIO_SHAPED_CHECKS
+               for f in after["failing"] for r in f["reasons"])
+
+
+def merge(scenarios, records, min_delta=0.0, repairs=None):
+    repairs = set(repairs or [])
+    rows, findings, repairable = [], [], []
     for scenario in scenarios:
         sid = scenario["id"]
+        repaired = sid in repairs
         baseline_rec, after_rec = records.get((sid, "baseline")), records.get((sid, "after"))
         if baseline_rec is not None and after_rec is None:
             baseline = score_side(scenario, baseline_rec)
@@ -132,32 +145,43 @@ def merge(scenarios, records, min_delta=0.0):
                 rows.append({"id": sid, "requirement": scenario.get("requirement"),
                              "tier": scenario.get("tier"), "model": baseline_rec.get("model"),
                              "baseline": baseline, "after": baseline, "delta": 0.0,
-                             "verdict": "saturated"})
+                             "verdict": "saturated", "repaired": repaired})
                 continue
         if baseline_rec is None or after_rec is None:
             missing = "baseline" if baseline_rec is None else "after"
             rows.append({"id": sid, "requirement": scenario.get("requirement"),
                          "tier": scenario.get("tier"), "verdict": "invalid",
-                         "what": f"no {missing} result file"})
+                         "what": f"no {missing} result file", "repaired": repaired})
             continue
         baseline, after = score_side(scenario, baseline_rec), score_side(scenario, after_rec)
         verdict = verdict_of(baseline, after, min_delta)
-        rows.append({
+        row = {
             "id": sid, "requirement": scenario.get("requirement"), "tier": scenario.get("tier"),
             "model": after_rec.get("model"), "baseline": baseline, "after": after,
             "delta": round(after["rate"] - baseline["rate"], 4), "verdict": verdict,
-        })
+            "repaired": repaired,
+        }
         if verdict in ("unchanged", "regressed"):
-            findings.append({
+            suspect = is_suspect(after)
+            row["suspect"] = suspect
+            finding = {
                 "kind": verdict,
                 "severity": "critical" if verdict == "regressed" else "major",
                 "violated_criterion": f"{scenario.get('requirement')}/{sid}",
+                "suspect": suspect,
                 "what": f"baseline {baseline['passes']}/{baseline['valid']} -> after "
                         f"{after['passes']}/{after['valid']}; "
-                        + "; ".join(r for f in after["failing"] for r in f["reasons"])[:400],
-            })
+                        + "; ".join(r["what"] for f in after["failing"] for r in f["reasons"])[:400],
+            }
+            if suspect and not repaired:
+                repairable.append(sid)
+            else:
+                findings.append(finding)
+        rows.append(row)
     verdicts = [r["verdict"] for r in rows]
-    if any(v in ("unchanged", "regressed") for v in verdicts):
+    if repairable:
+        result = "repair"
+    elif any(v in ("unchanged", "regressed") for v in verdicts):
         result = "fail"
     elif "invalid" in verdicts:
         result = "infra"
@@ -169,6 +193,7 @@ def merge(scenarios, records, min_delta=0.0):
         "verdict_counts": {v: verdicts.count(v) for v in VERDICTS},
         "scenarios": rows,
         "findings": findings,
+        "repairable": repairable,
     }
 
 
@@ -217,6 +242,10 @@ def main(argv):
     parser.add_argument("--out", required=True)
     parser.add_argument("--min-delta", type=float, default=0.0)
     parser.add_argument("--baseline-only", action="store_true")
+    parser.add_argument("--repairs-file",
+                        help="JSON list of scenario ids already given one repair round "
+                             "this attempt; a suspect scenario NOT in this list is pulled "
+                             "into `repairable` (RESULT: repair) instead of `findings`")
     args = parser.parse_args(argv[1:])
 
     try:
@@ -231,6 +260,15 @@ def main(argv):
                 if os.path.isfile(path):
                     with open(path, encoding="utf-8") as fh:
                         records[(scenario["id"], label)] = json.load(fh)
+        repairs = []
+        if args.repairs_file:
+            try:
+                with open(args.repairs_file, encoding="utf-8") as fh:
+                    repairs = json.load(fh)
+            except FileNotFoundError:
+                repairs = []  # no scenario has been repaired yet this attempt
+            if not isinstance(repairs, list):
+                raise ValueError(f"{args.repairs_file}: expected a JSON list of scenario ids")
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         sys.stderr.write(f"{exc}\n")
         return 2
@@ -238,7 +276,7 @@ def main(argv):
     if args.baseline_only:
         return baseline_only(scenarios, records, args.out)
 
-    merged = merge(scenarios, records, args.min_delta)
+    merged = merge(scenarios, records, args.min_delta, repairs)
     write_json(args.out, merged)
     for row in merged["scenarios"]:
         if "baseline" in row:
@@ -246,11 +284,18 @@ def main(argv):
             base = "absent" if b["absent"] else f"{b['passes']}/{b['valid']}"
             print(f"{row['id']} ({row['requirement']}, tier {row['tier']}): baseline {base} "
                   f"[cache {b['cache']}] -> after {a['passes']}/{a['valid']} "
-                  f"[cache {a['cache']}] = {row['verdict']}")
+                  f"[cache {a['cache']}] = {row['verdict']}"
+                  + (" [suspect]" if row.get("suspect") else "")
+                  + (" [repaired]" if row.get("repaired") else ""))
         else:
             print(f"{row['id']}: {row['verdict']} — {row['what']}")
+    for sid in merged["repairable"]:
+        print(f"REPAIR: {sid}")
+    for row in merged["scenarios"]:
+        if row.get("suspect") and row.get("repaired"):
+            print(f"REPAIR_USED: {row['id']}")
     print(f"RESULT: {merged['result']}")
-    return {"pass": 0, "fail": 1, "infra": 3}[merged["result"]]
+    return {"pass": 0, "fail": 1, "infra": 3, "repair": 4}[merged["result"]]
 
 
 if __name__ == "__main__":

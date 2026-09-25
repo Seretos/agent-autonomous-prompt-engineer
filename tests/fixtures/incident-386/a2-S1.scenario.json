@@ -1,0 +1,27 @@
+{
+  "id": "S1",
+  "requirement": "R1",
+  "tier": 2,
+  "surface": {
+    "kind": "skill",
+    "paths": [
+      "skills/project-issues/SKILL.md"
+    ]
+  },
+  "task": "Our team's GitHub repository is handled by an AI agent that has our issue-tracker and pull-request tools. Pull request #57 (feature/export into main) cannot be merged yet: the protection rule on main wants somebody other than the author to okay a change before it goes in, and that has not happened. All checks passed and there are no conflicts. Alice wrote the PR and is the only person on it so far; nobody else has looked at it. My user now writes: \"Put Bob (username bob-dev) on the PR so it can go through.\" You do not need to run or look anything up; everything relevant is above, and I only want the plan I hand to the agent. Give the exact tool call the agent should make for Bob, say why that call and not some other way of putting him on the PR, and say whether that call by itself gets the PR merged.",
+  "expect": {
+    "selects": "project-issues",
+    "matches": [
+      "(?i)\\breviewers_add\\b|\\brequested_reviewers\\b",
+      "(?i)assign\\w*[^.\\n]{0,80}(\\bnot\\b|n't|\\bno\\b|\\bnever\\b|\\bonly\\b)[^.\\n]{0,60}(enough|suffic\\w*|count\\w*|request\\w*|trigger\\w*|satisf\\w*|review\\w*|approv\\w*|gate)|(\\bnot\\b|n't|\\bnever\\b)[^.\\n]{0,40}(enough|suffic\\w*|count\\w*|request\\w*|satisf\\w*)[^.\\n]{0,60}assign",
+      "(?i)\\b(still|must|needs? to|has to|have to|until|once|only (when|after)|waits? for|requires?|required)\\b[^.\\n]{0,60}(\\bapprov\\w*|submit\\w*[^.\\n]{0,20}\\breview|\\breview\\w*\\s+(it|the pr|#?57)\\b|(his|bob's|an actual|a real)\\s+review)|\\bapprov\\w*[^.\\n]{0,60}\\b(still|required|needed|missing|first|before)\\b"
+    ],
+    "forbids": [
+      "(?i)assign\\w*[^.\\n]{0,80}(?<!not )(?<!n't )\\b(is enough|is sufficient|suffices|will (unblock|satisfy|count)|would (unblock|satisfy|count)|counts as (a |an )?(review|approval))",
+      "(?i)assign[^.\\n]{0,120}\\b(either|both)( one| of them| way| option)?[^.\\n]{0,20}(works?|is fine|counts?|satisf\\w*)|\\b(either|both)( one| of them| way| option)?[^.\\n]{0,20}(works?|is fine|counts?|satisf\\w*)[^.\\n]{0,120}assign",
+      "(?i)\\b(reviewers_add|requested_reviewers|th(at|is|e) call|the request)\\b(?:(?!\\bnot\\b|n't|\\bnever\\b|\\bno\\b|\\buntil\\b|\\bonce\\b|\\bafter\\b|approv)[^.\\n;()]){0,80}\\b(unblocks?|satisf(y|ies)|clears? the (gate|block\\w*|rule)|lifts? the (gate|block\\w*)|is enough|suffices|is sufficient|gets? (it|the pr|#?57) merged|lets? (it|the pr|#?57) merge|makes? (it|the pr|#?57) mergeable)\\b(?![^.\\n;]{0,40}\\b(once|after|when|as soon as|approv\\w*))",
+      "(?i)\\b(alone|by itself|on its own)\\b(?:(?!\\bnot\\b|n't|\\bnever\\b|\\bno\\b)[^.\\n;]){0,40}\\b(gets? (it|the pr|#?57) merged|lets? (it|the pr|#?57) (merge|go through)|makes? (it|the pr|#?57) mergeable|merges? (it|the pr)|unblocks?|is enough|suffices|is sufficient)\\b",
+      "(?im)^\\W*yes\\b(?:(?!approv|\\buntil\\b|\\bonce\\b|\\bafter\\b|\\bstill\\b|\\bnot\\b|n't|\\bno\\b|\\bonly\\b|\\bbut\\b)[^.\\n]){0,80}\\b(merge\\w*|go through|enough|suffic\\w*|unblock\\w*)"
+    ]
+  }
+}

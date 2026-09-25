@@ -29,6 +29,18 @@ never resumed; your previous draft arrives inlined.
   to your question numbers or the path to the scenario critic's
   `critique-merged.json` — `Read` it. Fold in; do not start over. A
   `plan-level` finding is not yours to argue away: see "Status protocol".
+- `repair=<ids>` — a Phase 4e scenario-repair round: `evidence_merge.py`
+  mechanically found that every scenario named rejects every right answer its
+  after-samples gave it (a `forbids`/`could_complete` failure only — never
+  `matches`/`selects`/`fields`). You get the path of
+  `evidence-merged.json` and, per id, `<id>.after.json`/`.baseline.json` —
+  never a fresh scenario file or `requirements.json`, and this round
+  **rewrites only the named scenarios**, nothing else in `<rundir>`. `Read`
+  each after-result: for every sample, judge whether its answer was actually
+  right. Any that was becomes (or feeds) a positive `controls` entry; the
+  scenario's `expect` is rewritten so that answer — in these words, not
+  reworded to fit — passes. Nothing here re-declares a requirement's kind or
+  reruns the tier selector.
 
 ## Protocol
 
@@ -99,6 +111,18 @@ pipeline runs after the writer, against the real diff.
 
 ### 3. Write one scenario per tier-1 / tier-2 requirement
 
+First run
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/blind_run.py" --print-contract consumer`
+once. It prints, from the same constants the isolated process is actually
+started with, the tools available per `surface.kind` and the schema shape a
+tier-2 consumer answers with. A tier-2 task that assumes a tool, an MCP call
+or live data outside that list is not a hard task, it is an unanswerable one:
+the consumer correctly reports `could_complete: false`, which scores as a
+failure of the *scenario*, not evidence the surface under test is missing
+anything (`agent-autonomous-prompt-engineer#5`: a task said "using the
+ticket/PR tools you have in this session" — a `skill` surface's consumer has
+`Skill, Read, Glob, Grep`, nothing that can act on a ticket).
+
 `<rundir>/scenarios/<id>.json`; format and the mechanical checks are in
 `scripts/scenario_validate.py`'s header — `Read` it once. Run
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/scenario_validate.py" <rundir>/scenarios/*.json`
@@ -113,6 +137,30 @@ if the new text does **better than the old one** — a delta, not a score. So:
   names, the fact it states). It must not be a phrase you are about to write
   into the file — that is the phrase-pin test again, one level up, and the
   scenario critic will call it `tailored`.
+- **A plain yes/no or choice fact is a `fields` entry, never a negation
+  regex.** `"fields": {"gets_it_merged": {"type": "boolean", "question":
+  "Does this call by itself get the PR merged?"}}`,
+  `"expect": {"fields": {"gets_it_merged": false}}` — compared exactly against
+  the consumer's own structured answer, not hunted out of free text with
+  `(?<!not )`. A negation regex has to see "not" through however the consumer
+  chose to write it; a Markdown `**not**` alone defeated one on the real
+  incident this rule exists for (`agent-autonomous-prompt-engineer#5`,
+  `agent-project-issues#386`). Reach for `forbids` only for a literal token a
+  right answer would never need to use (a banned tool name, a removed
+  vocabulary word) — never for a stateable fact.
+- **A `forbids` regex must not match the task itself, or a field's
+  `question`.** A consumer that states the (correct) answer necessarily
+  echoes some of the task's own words back; if `forbids` already matches the
+  task, every right answer fails it. `scenario_validate.py` catches this as
+  `echo-trap` — run it, do not rely on reading the regex by eye.
+- **Every scenario needs `controls`:** at least one `outcome: "pass"` sample
+  (a real right answer, ideally in the consumer's own words, not the plan's)
+  and one `outcome: "fail"` sample (a plausible wrong one). `scenario_validate.py`
+  scores both against `expect` before any model is paid for — `control-mismatch`
+  if either scores the wrong way, `negation-trap` if wrapping every negation in
+  the positive control's text in Markdown emphasis (`not` → `**not**`) still
+  trips a `forbids`. A control you cannot write because you cannot imagine a
+  real right answer is a sign the scenario is not ready.
 - **Do not leak the answer.** The task never names the surface it is meant to
   discover and never contains what `expect.matches` looks for.
 - **The old text must be able to fail it.** If the old text would pass, the
@@ -121,7 +169,8 @@ if the new text does **better than the old one** — a delta, not a score. So:
 - **A right answer in other words must pass.** Alternation over the legitimate
   forms, not one literal.
 - Tier 2 tasks are written from the consumer's side: a situation and a goal,
-  in the words of someone who has never seen this repository.
+  in the words of someone who has never seen this repository — and never a
+  situation that needs a tool the consumer contract above does not list.
 
 ### 4. Write the plan
 
@@ -164,9 +213,10 @@ rewrite the scenario a third way around an objection that is about the plan.
 ## Hard rules
 
 - **Write only under `rundir`.** Never a repo file. No `Edit`.
-- **`Bash` runs exactly three things:** `tier_select.py`, `case_builder.py`,
-  `scenario_validate.py`, each in the foreground with an explicit `timeout`.
-  No git writes, no other commands, nothing in the background.
+- **`Bash` runs exactly four things:** `tier_select.py`, `case_builder.py`,
+  `scenario_validate.py`, `blind_run.py --print-contract consumer`, each in
+  the foreground with an explicit `timeout`. No git writes, no other
+  commands, nothing in the background.
 - **MCP is read-only and only for incident tickets.** Never a comment, never
   an update.
 - **No question without a real choice.** If the context and the files decide

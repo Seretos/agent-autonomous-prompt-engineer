@@ -41,12 +41,18 @@ The planner declares a **kind** per requirement (`prose-step`, `prose-surface`, 
 
 An invalid sample (leak, crash) is not scored. Fewer than half valid → `infra`, an `i` round, never a verdict.
 
+## A scenario that rejects a right answer is repaired once, never argued with
+
+Seen twice on `agent-project-issues#386` (`agent-autonomous-prompt-engineer#5`): a scenario whose every failing after-sample fails only on `forbids`/`could_complete` — never on `matches`/`selects`/`fields`, i.e. never on the actual content of the answer — cannot become `improved` by any change to the prose, because the defect is in the scenario, not the text under test. `evidence_merge.py` marks such a row `suspect`; before ticket #5 the pipeline had no way to act on that distinction and the scenario-critic's own finding about it, filed as `major`, never reached the planner (a major "goes to the reviewer as notes, never back to the planner" — right for a precision question, fatal for one that guarantees `failed`).
+
+`--repairs-file` turns a first-time suspect scenario into `RESULT: repair` (exit 4) instead of a finding: the pipeline dispatches the planner with `repair=<ids>` and the real after-answers, over the scenario files only, then re-runs the scenario critic and the evidence gate for those ids — never bumping the `evidence` gate, because the prose did nothing wrong. Once an id is in `--repairs-file`, it never gets a second free pass: a still-suspect scenario after one repair is a real (if unusual) finding, `suspect: true` kept for the reviewer and the PR body.
+
 ## Cost is controlled by tier selection and the cache — not by a dollar cap
 
 Same reasoning as the upper plugin's AGENTS.md: a dollar cap kills a package mid-way and the retry pays again. Instead:
 
-- The **baseline is cached** under `APE_CACHE_DIR` (default `~/.claude/ape-cache`, outside the worktree so it survives `worktree_remove`), keyed by a hash of the artifact under test plus the scenario's input, the model and the sample count — deliberately **not** the scenario's `expect`, so tightening an expectation does not re-buy samples. A ticket pays for "after" only; after a writer fix round only the scenarios whose artifact changed are paid again. A hit is reported as `CACHE: hit` and goes into the event text.
-- Only a complete, fully valid run is cached.
+- The **baseline is cached** under `APE_CACHE_DIR` (default `~/.claude/ape-cache`, outside the worktree so it survives `worktree_remove`), keyed by a hash of the artifact under test plus the scenario's input — task and `fields`' questions, i.e. what the consumer is asked, never `expect` — the model and the sample count, so tightening an expectation does not re-buy samples. A ticket pays for "after" only; after a writer fix round only the scenarios whose artifact changed are paid again. A hit is reported as `CACHE: hit` and goes into the event text.
+- Only a complete, fully valid run is cached — on any call, `--no-cache` included: that flag only skips the cache *read* (bypassing a suspected-stale entry), never the write. Before ticket #3 the write was gated on `not --no-cache` too, so a run forced past a stale cache was never cached either, and a ticket that had to use it paid for the same samples on every later round. `--retry-invalid` reruns only the samples an earlier result marked invalid (crashed or leaked), keeps the valid ones, and — once the merged result is fully valid — caches it; it replaced the old advice to rerun the whole scenario with `--no-cache`.
 - The consumer model is the **weakest model the surface is meant for** (default `sonnet`), passed as an explicit `--model` on every process so a run never inherits the last `/model`.
 
 ## Isolation is a property of the process, and then it is checked
@@ -55,13 +61,17 @@ Every model process this plugin starts outside the session — blind consumer, s
 
 Only the surface is made available, **via a staged plugin dir, never the repo**: `blind_run.py` copies the listed files into a throw-away plugin and passes `--plugin-dir`, so discovery runs through the harness's real skill listing. `selected` for a skill is read from the transcript's `Skill` tool calls, not from what the consumer says it used.
 
+What the consumer has is not a second description anyone hand-writes: `blind_run.consumer_contract()` renders it from `TOOLS_BY_KIND` and the schema-building code, `--print-contract consumer` prints it, the planner reads it before writing a task, and `scenario_critic_run.assemble_package` embeds it verbatim as the package's fourth part. A task that assumes a tool the consumer does not have is now checked against the same source the harness actually starts it with.
+
 A started process with `Read` can still open any absolute path. So `leak_check.py` walks each sample's own stream-json transcript afterwards and marks it **invalid** on a foreign MCP/plugin/tool or a read outside the surface. Invalid is not failed.
 
 **Reuse of existing blind-test agents** (ticket #1, item 5): `agent-mcp-tester`'s `cluster-tester` was checked and does not fit — it is a subagent *inside* a session (it inherits the session's context, the opposite of blind), needs a live MCP and sandbox projects, and tests tool behaviour, not a text surface. What is reused is its second lens, "agent-intuitiveness — judged purely from the surface", as the consumer's report shape (`missing` = sufficiency, `confusing` = ergonomics, `selected` = discoverability).
 
 ## Exactly one critic, and it judges scenarios, not wording
 
-`scenario-critic` wraps `scenario_critic_run.py`: one isolated process, a script-assembled verbatim package (spec, plan, scenarios), kinds `tailored` / `answer-leak` / `unfalsifiable` / `off-requirement` / `plan-level`. The mechanically decidable half (`scenario_validate.py`: the task already contains the expected answer, the task names the surface it should discover, empty expectations) runs first and costs nothing.
+`scenario-critic` wraps `scenario_critic_run.py`: one isolated process, a script-assembled verbatim package (spec, plan, scenarios, and — from `blind_run.consumer_contract()` — what the blind consumer actually has), kinds `tailored` / `answer-leak` / `unfalsifiable` / `off-requirement` / `plan-level` / `rejects-right-answer`. The mechanically decidable half (`scenario_validate.py`: the task already contains the expected answer, a `forbids` regex already matches the task or a `fields` question (`echo-trap`), the task names the surface it should discover, empty expectations, a missing or mismatched `controls` pair, a positive control that a Markdown-wrapped negation still trips (`negation-trap`)) runs first and costs nothing. `rejects-right-answer` is the critic's own half of the same question the mechanical checks answer for a *given* control: can it construct any concrete right answer — in other words, or one that correctly reports `could_complete: false` because the task needs a tool the consumer contract does not list — that this scenario would still reject. It is always `critical`: under the delta rule below, a scenario that rejects a right answer can never score `improved`, whatever the change.
+
+A plain yes/no or choice fact belongs in `fields` (a schema property `blind_run.py` adds to the consumer's structured answer) and `expect.fields` (compared exactly), not in a `forbids` negation regex — a regex has to see "not" however the consumer happened to write it, and a Markdown `**not**` alone defeated one on `agent-autonomous-prompt-engineer#5` (`agent-project-issues#386`).
 
 Two leaks the critic cannot see are closed structurally: the **writer never receives a scenario file or `evidence-merged.json`** (on a fix round it gets the blind run's *result files* — what the consumer did and reported missing — never the expectations), and the **reviewer** checks the diff for planted scenario text.
 
@@ -88,6 +98,10 @@ Agent names carry a `prose-` prefix (`prose-planner`, not `planner`) because bot
 `.ape/` is this plugin's run directory, `.adev/` the developer's; the two never share state.
 
 Scripts force UTF-8 on stdout/stderr: a piped stdout on Windows defaults to the ANSI code page, and the first `—` in a message crashed the reader (found by the test suite on day one).
+
+## Every run dir outlives its worktree
+
+`worktree_remove` deletes `<worktree_path>`, and `<rundir>` lives under it — a `failed`/`blocked` attempt loses its scenarios, evidence and round history with the worktree, unrecoverably. Both `agent-project-issues#386` attempts hit exactly this (`agent-autonomous-prompt-engineer#5`): only a session transcript and one lucky `ape-cache` entry survived, and rebuilding the two fixtures under `tests/fixtures/incident-386/` from those took hours a copied directory would have made instant. `rundir_archive.py` copies `<rundir>` to `APE_ARCHIVE_DIR` (default `~/.claude/ape-runs/`, outside every worktree, same "refuse inside a git checkout" guard as `ape_common.fresh_workdir`) before every terminal event — success included, because a `ci-green` run's evidence is also worth keeping and "only archive on failure" is a branch nobody remembers to test. The event text names the archive path.
 
 ## Release
 

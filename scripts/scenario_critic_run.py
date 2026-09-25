@@ -39,6 +39,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ape_common import (ISOLATION_FLAGS, canonical, fresh_workdir, run_isolated,  # noqa: E402
                         sha256_file, write_json)
+from blind_run import consumer_contract  # noqa: E402
 from scenario_validate import case_input_path, load_scenario, validate  # noqa: E402
 
 # A piped stdout on Windows defaults to the ANSI code page; every consumer of
@@ -73,6 +74,10 @@ def assemble_package(spec, plan, scenarios):
                       f"characters{cut} ---\n" + case[:CASE_INPUT_CHARS])
         blocks.append(block)
     parts.append("PART 3 — SCENARIOS (verbatim)\n\n" + "\n\n".join(blocks))
+    # From the same constants blind_run.py actually starts the consumer with
+    # — never restated by hand, so a task that assumes a tool or live data
+    # the consumer does not have is checked against the real contract.
+    parts.append("PART 4 — " + consumer_contract())
     return ("\n\n" + "=" * 78 + "\n\n").join(parts) + "\n"
 
 
