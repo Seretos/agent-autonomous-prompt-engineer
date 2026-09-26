@@ -52,9 +52,11 @@ python <scripts>/event_block.py render --event <name> --package <package> --atte
 ```
 
 and count every gate round with
-`python <scripts>/event_block.py bump <rundir>/rounds.json <gate> <f|i>`
-(`f` = the round ended with real findings, `i` = lost to infrastructure; both
-count). It prints `CAP: open|soft|hard`.
+`python <scripts>/event_block.py bump <rundir>/rounds.json <gate> <f|i|c>`
+(`f` = the round ended with real findings, `i` = lost to infrastructure, `c` =
+the round ran and passed cleanly. `c` counts on the `rounds:` line, never
+toward the cap — the cap stays decided by `f + i` alone). It prints
+`CAP: open|soft|hard`.
 
 The vocabulary, and what each name means **here**:
 
@@ -82,7 +84,7 @@ The gates on the `rounds:` line are this plugin's own:
 | gate | soft cap | hard cap | counts |
 |---|---|---|---|
 | `scenario-critic` | 3 | 6 | critique rounds |
-| `evidence` | 3 | 3 | write → evidence rounds that did not pass |
+| `evidence` | 3 | 3 | write → evidence rounds, clean ones included |
 | `review` | 3 | 6 | review rounds |
 | `ci` | 3 | 3 | CI rounds |
 | `rebase` | 3 | 3 | Phase R conflict rounds |
@@ -217,9 +219,9 @@ is cached), and the writer continues from the committed text.
 
 No new event; it advances `rebase=` on the `rounds:` line.
 
-1. `git -C <worktree_path> rebase origin/<base_branch>`. Clean → Checkpoint
-   `push_mode=lease`, go to step 4. Conflict → step 2. Anything else →
-   `rebase --abort`, `failed` with the git output.
+1. `git -C <worktree_path> rebase origin/<base_branch>`. Clean → bump
+   `rebase c`, Checkpoint `push_mode=lease`, go to step 4. Conflict → step 2.
+   Anything else → `rebase --abort`, `failed` with the git output.
 2. **Resolve, one round per stop, cap 3.** Dispatch `prose-writer` with
    `worktree_path`, the conflicted file list
    (`git diff --name-only --diff-filter=U`) and the newest
@@ -287,11 +289,14 @@ Dispatch `scenario-critic` (fresh, unnamed) with `spec_file`, `plan_file`,
 - `GATE_RESULT: MALFORMED` → not a round. One planner re-dispatch with the
   script's stderr; malformed again → `failed`.
 - `GATE_RESULT: INFRA_FAILURE` → bump `i`; re-dispatch. Three `i` → `failed`.
-- `GATE_RESULT: OK` → post `plan-critic-verdict` (counts, one line per
-  critical/major). Then:
-  - `critical=0` → accept. Majors and minors go to the reviewer as notes (the
-    path of `critique-merged.json`), never back to the planner.
-  - any critical → bump `f`, run the stagnation check on
+- `GATE_RESULT: OK`, `critical=0` → bump `scenario-critic c` (before the
+  event, so this round's own verdict counts it), then post
+  `plan-critic-verdict` (counts, one line per critical/major). Accept; majors
+  and minors go to the reviewer as notes (the path of
+  `critique-merged.json`), never back to the planner.
+- `GATE_RESULT: OK`, any critical → post `plan-critic-verdict` (counts, one
+  line per critical/major). Then:
+  - bump `f`, run the stagnation check on
     `<output_dir>/critique-merged.json` (see *Progress or stagnation*), and on
     `progress`: archive `plan.md` to `plan-round-<n>.md`, re-dispatch the
     planner (fresh) with the previous plan inlined and the **path** of
@@ -359,8 +364,9 @@ python <scripts>/evidence_merge.py --scenarios-dir <rundir>/scenarios --results-
 (the repairs file need not exist yet; a missing one reads as "nothing
 repaired this attempt".)
 
-- exit 0 (`RESULT: pass`) → post `tests-green`: the table the script printed,
-  and "evidence delta only — CI decides". Name any `[repaired]` scenario.
+- exit 0 (`RESULT: pass`) → bump `evidence c`, then post `tests-green`: the
+  table the script printed, and "evidence delta only — CI decides". Name any
+  `[repaired]` scenario.
 - exit 4 (`RESULT: repair`) → **Phase 4e**, below. Not a round on any gate:
   a scenario that mechanically rejects every right answer it was shown is not
   evidence that the prose is wrong.
@@ -419,14 +425,16 @@ stagnation check on it.
 Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
 `tier_report=<rundir>/tiers-diff.json`, `evidence=<rundir>/evidence-merged.json`
 (or "none"), `scenarios_dir`, `worktree_path`, `base_branch`, and from round 2
-`last_reviewed_sha`. Post `review-verdict`.
+`last_reviewed_sha`.
 
-- `APPROVE` → Phase 6.
-- `CHANGES_REQUESTED` → bump `review f`; `Write` its structured block to
-  `<rundir>/review-findings-round-<n>.json`; stagnation check. On `progress`:
-  fresh `prose-writer` with the findings, **Checkpoint the moment it returns**,
-  re-run **4c and 4d** (the text changed; the cache makes untouched scenarios
-  free), then a fresh review narrowed to the findings plus the delta diff.
+- `APPROVE` → bump `review c` (before the event, so this round's own verdict
+  counts it), then post `review-verdict`. Phase 6.
+- `CHANGES_REQUESTED` → post `review-verdict`, then bump `review f`; `Write`
+  its structured block to `<rundir>/review-findings-round-<n>.json`;
+  stagnation check. On `progress`: fresh `prose-writer` with the findings,
+  **Checkpoint the moment it returns**, re-run **4c and 4d** (the text
+  changed; the cache makes untouched scenarios free), then a fresh review
+  narrowed to the findings plus the delta diff.
 
 ## Phase 6 — commit, push, PR
 
@@ -457,16 +465,16 @@ Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
 1. `head = git -C <worktree_path> rev-parse HEAD`.
 2. One blocking foreground call, never from a subagent, never detached:
    `Bash("bash <scripts>/ci-wait-pipeline.sh --project <project_id> --sha <head> --timeout 540", timeout: 600000)`.
-   Route on its exit code: `0` → **`ci-green`** with `ci_run:` from its JSON;
-   end. `1` → `ci-red` (bump `ci f`), step 3. `2`/`3` → run it again inside the
-   round; 45 minutes without a verdict is an `i` round. `4` or anything
-   outside 0–5 → the CLI is unusable here: fall back to
-   `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, read as in the
-   project-issues skill (agent-project-issues), "Reading a run's `status` and
-   `conclusion`", repeated inside the round's budget without a pacing command;
-   post `blocked` only when that lookup fails too. `5` → no verdict: retrigger
-   once with an empty commit (`i`); a second time → `blocked` quoting each
-   run's state and url.
+   Route on its exit code: `0` → bump `ci c`, then **`ci-green`** with
+   `ci_run:` from its JSON; end. `1` → `ci-red` (bump `ci f`), step 3.
+   `2`/`3` → run it again inside the round; 45 minutes without a verdict is an
+   `i` round. `4` or anything outside 0–5 → the CLI is unusable here: fall
+   back to `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, read
+   as in the project-issues skill (agent-project-issues), "Reading a run's
+   `status` and `conclusion`", repeated inside the round's budget without a
+   pacing command; green → bump `ci c`, then `ci-green`; post `blocked` only
+   when that lookup fails too. `5` → no verdict: retrigger once with an empty
+   commit (`i`); a second time → `blocked` quoting each run's state and url.
 3. On a failure: `get_pipeline_run(…, include_failure_excerpt=True)` and
    `get_pipeline_step_log(…, mode="around_failure")`. A **finding** caused by
    the diff (lint, a contract check, a link check) → fresh `prose-writer` with

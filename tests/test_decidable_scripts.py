@@ -41,6 +41,55 @@ def test_event_block_reaches_the_hard_cap_and_refuses_unknown_names(tmp_path):
     assert run_script("event_block.py", "bump", rounds, "test-critic", "f").returncode == 2
 
 
+def test_event_block_counts_clean_rounds_on_the_line_but_not_toward_the_cap(tmp_path):
+    """#12: a gate that ran and passed cleanly (no findings, no infra loss)
+    must show up in the `rounds:` line's `used` count, but must never move
+    `CAP` — cap state stays decided by f + i alone."""
+    rounds = tmp_path / "rounds.json"
+
+    first = run_script("event_block.py", "bump", rounds, "review", "c")
+    assert first.returncode == 0, first.stderr
+    out = run_script("event_block.py", "render", "--event", "review-verdict", "--package", "7",
+                     "--rounds-file", rounds).stdout
+    assert "review=1/3(0f,0i)" in out
+
+    run_script("event_block.py", "bump", rounds, "review", "c")
+    last = run_script("event_block.py", "bump", rounds, "review", "c")
+    # Three clean rounds fill the soft cap's *count* on the line, but a clean
+    # round never counts toward the cap itself.
+    assert "CAP: open" in last.stdout
+    # Accumulation, not a flag: three separate `c` bumps must add up to 3 on
+    # the line, not merely be truthy/present (a `c = 1` implementation would
+    # still pass the single-bump assertion above and the CAP checks, since
+    # CAP never depends on c at all).
+    out_after_three = run_script("event_block.py", "render", "--event", "review-verdict",
+                                 "--package", "7", "--rounds-file", rounds).stdout
+    assert "review=3/3(0f,0i)" in out_after_three
+
+    run_script("event_block.py", "bump", rounds, "ci", "f")
+    run_script("event_block.py", "bump", rounds, "ci", "i")
+    last_ci = run_script("event_block.py", "bump", rounds, "ci", "c")
+    # CAP is f + i only: two rounds against a 3-cap gate is still open.
+    assert "CAP: open" in last_ci.stdout
+    out2 = run_script("event_block.py", "render", "--event", "ci-green", "--package", "7",
+                      "--rounds-file", rounds).stdout
+    # used = f + i + c = 3, but the parenthesised suffix still shows only f/i.
+    assert "ci=3/3(1f,1i)" in out2
+
+
+def test_event_block_render_handles_a_rounds_file_without_a_clean_key(tmp_path):
+    """A `rounds.json` written before the `c` kind existed has no `"c"` key
+    for any gate. render/bump must still work by defaulting it to 0 — this
+    may already pass unmodified, it guards against a fix that requires the
+    key to be present."""
+    rounds = write_json(tmp_path / "rounds.json", {"review": {"f": 1, "i": 0}})
+    out = run_script("event_block.py", "render", "--event", "review-verdict", "--package", "1",
+                     "--rounds-file", rounds).stdout
+    assert "review=1/3(1f,0i)" in out
+    bumped = run_script("event_block.py", "bump", rounds, "review", "c")
+    assert bumped.returncode == 0
+
+
 # --- tier_select.py -------------------------------------------------------------------------
 
 
