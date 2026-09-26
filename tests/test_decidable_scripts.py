@@ -58,6 +58,13 @@ def test_event_block_counts_clean_rounds_on_the_line_but_not_toward_the_cap(tmp_
     # Three clean rounds fill the soft cap's *count* on the line, but a clean
     # round never counts toward the cap itself.
     assert "CAP: open" in last.stdout
+    # Accumulation, not a flag: three separate `c` bumps must add up to 3 on
+    # the line, not merely be truthy/present (a `c = 1` implementation would
+    # still pass the single-bump assertion above and the CAP checks, since
+    # CAP never depends on c at all).
+    out_after_three = run_script("event_block.py", "render", "--event", "review-verdict",
+                                 "--package", "7", "--rounds-file", rounds).stdout
+    assert "review=3/3(0f,0i)" in out_after_three
 
     run_script("event_block.py", "bump", rounds, "ci", "f")
     run_script("event_block.py", "bump", rounds, "ci", "i")

@@ -15,10 +15,11 @@ Usage:
   event_block.py render --event <name> --package <id> [--attempt <n>]
                         --rounds-file <json> [--pr <n>] [--ci-run <id>]
       prints the block (the caller appends one human paragraph and posts it).
-  event_block.py bump <rounds-file> <gate> <f|i>
+  event_block.py bump <rounds-file> <gate> <f|i|c>
       counts one round against a gate (f = ended with findings, i = lost to
-      infrastructure; both count). Creates the file on first use. Prints
-      `USED: <n>/<soft>` and `CAP: open|soft|hard`.
+      infrastructure, c = ran and passed cleanly). Creates the file on first
+      use. Prints `USED: <n>/<soft>` and `CAP: open|soft|hard`, both computed
+      from f + i only — c counts on the `rounds:` line, never toward the cap.
   event_block.py --print-contract <events|terminal-events|gates>
       the tables as JSON, read by lint_prose.py's contract check.
 
@@ -61,22 +62,28 @@ CONTRACTS = {
 
 
 def load_rounds(path):
-    rounds = {gate: {"f": 0, "i": 0} for gate in GATES}
+    rounds = {gate: {"f": 0, "i": 0, "c": 0} for gate in GATES}
     if path and os.path.isfile(path):
         with open(path, encoding="utf-8") as fh:
             stored = json.load(fh)
         for gate, counts in stored.items():
             if gate not in GATES:
                 raise ValueError(f"unknown gate {gate!r} in {path}")
-            rounds[gate] = {"f": int(counts.get("f", 0)), "i": int(counts.get("i", 0))}
+            rounds[gate] = {
+                "f": int(counts.get("f", 0)),
+                "i": int(counts.get("i", 0)),
+                "c": int(counts.get("c", 0)),
+            }
     return rounds
 
 
 def rounds_line(rounds):
     parts = []
     for gate, (soft, _hard) in GATES.items():
-        f, i = rounds[gate]["f"], rounds[gate]["i"]
-        parts.append(f"{gate}={f + i}/{soft}({f}f,{i}i)")
+        f, i, c = rounds[gate]["f"], rounds[gate]["i"], rounds[gate]["c"]
+        # used counts every round, clean ones included; the cap (elsewhere)
+        # is decided by f + i alone, so the parenthesised suffix stays f/i.
+        parts.append(f"{gate}={f + i + c}/{soft}({f}f,{i}i)")
     return " ".join(parts)
 
 
@@ -127,7 +134,7 @@ def main(argv):
     b = sub.add_parser("bump")
     b.add_argument("rounds_file")
     b.add_argument("gate")
-    b.add_argument("kind", choices=["f", "i"])
+    b.add_argument("kind", choices=["f", "i", "c"])
     args = parser.parse_args(argv[1:])
 
     try:
