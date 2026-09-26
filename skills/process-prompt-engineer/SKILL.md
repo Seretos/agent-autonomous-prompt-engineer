@@ -29,7 +29,7 @@ a reason to wait, and a retry is never a question.
 
 | parameter | required | meaning |
 |---|---|---|
-| `package` | yes | a ticket id, or an epic id = **all** its child tickets: one branch, one PR, one `Closes #<n>` per child |
+| `package` | yes | a ticket id, or an epic id = **all** its child tickets: one branch, one PR that closes every child (closing syntax: project-issues skill (agent-project-issues), "Pull requests: closing the ticket on merge") |
 | `project_id` | yes | the project-issues project. Never guessed |
 | `worktree_path` | yes | absolute path of the prepared worktree. Every git call is `git -C <worktree_path> …` |
 | `base_branch` | yes | the PR base |
@@ -40,8 +40,8 @@ a reason to wait, and a retry is never a question.
 ## Events — the contract with whoever called you
 
 State lives in the ticket, not in your return value. After every phase you
-post a comment on the **package ticket** via `add_comment` (the MCP prepends
-`#ai-generated`; never type it): the machine block, then one short paragraph.
+post a comment on the **package ticket** via `add_comment` (comment marker:
+see `add_comment`'s description): the machine block, then one short paragraph.
 
 The block is the developer plugin's `<!-- adev:event v1 -->` block — same
 marker, same keys, same closed vocabulary, same terminal semantics — so the
@@ -195,9 +195,10 @@ parameter.
 3. `ahead` = `git log --oneline origin/<base_branch>..HEAD` non-empty;
    `base_moved` = `git merge-base --is-ancestor origin/<base_branch> HEAD`
    fails.
-4. `finished` = an `open_pr` **and** `ahead` **and**
-   `list_pipeline_runs(project_id, commit_sha=<HEAD>, limit=20)` has at least
-   one completed run and every completed run is `success`. This pipeline opens
+4. `finished` = an `open_pr` **and** `ahead` **and** HEAD is green on
+   `list_pipeline_runs(project_id, commit_sha=<HEAD>, limit=20)` (green
+   condition: project-issues skill (agent-project-issues), "Reading a run's
+   `status` and `conclusion`"). This pipeline opens
    a PR only after the reviewer approved, so *open PR + green CI on this exact
    HEAD* means the work is done and only the base moved.
 
@@ -443,7 +444,9 @@ Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
    every `prose-other` requirement, every scenario saturated at the baseline
    or `saturated` after, and anything the critic's accepted majors left
    unexercised. The section is always present; "nothing — every requirement
-   has executed evidence" when that is true. · one `Closes #<n>` per ticket.
+   has executed evidence" when that is true. · a closing reference per ticket
+   of the package, in the provider's form (project-issues skill
+   (agent-project-issues), "Pull requests: closing the ticket on merge").
 5. Hard length cap: more than 60000 characters → cut at 60000 and append
    `…PR body truncated — see the ticket's events and <rundir>.`
 6. No open PR → `create_pr(…, draft=False)`. Exactly one → it is yours:
@@ -458,8 +461,9 @@ Dispatch `prose-reviewer` (fresh, unnamed) with `plan`, `change_report`,
    end. `1` → `ci-red` (bump `ci f`), step 3. `2`/`3` → run it again inside the
    round; 45 minutes without a verdict is an `i` round. `4` or anything
    outside 0–5 → the CLI is unusable here: fall back to
-   `list_pipeline_runs(project_id, commit_sha=head, limit=20)` classified by
-   `conclusion`, repeated inside the round's budget without a pacing command;
+   `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, read as in the
+   project-issues skill (agent-project-issues), "Reading a run's `status` and
+   `conclusion`", repeated inside the round's budget without a pacing command;
    post `blocked` only when that lookup fails too. `5` → no verdict: retrigger
    once with an empty commit (`i`); a second time → `blocked` quoting each
    run's state and url.
