@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# CI wait for process-prompt-engineer Phase 7 (copied from agent-autonomous-developer): resolve the project-issues CLI by
-# EXECUTING a candidate (on Windows / Git Bash the bare name can resolve to a
-# Linux ELF next to project-issues.exe -> rc 126/127), then pass the CLI's
-# stdout and exit code through unchanged. If no candidate is executable, exit 4
-# (the documented "CLI unusable" lane -> list_pipeline_runs fallback).
+# CI wait for skills/process-prompt-engineer/SKILL.md Phase 7 (routes its exit codes, incl. 4 = CLI unusable); CLI binary resolution: project-issues skill (agent-project-issues), "Where the binary lives".
 # Usage: ci-wait-pipeline.sh --project <id> --sha <sha> --timeout <s>
 set -u
 
