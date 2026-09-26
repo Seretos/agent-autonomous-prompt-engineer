@@ -1,0 +1,14 @@
+{
+  "name": "agent-autonomous-prompt-engineer",
+  "description": "Takes one work package whose change is prose that a model executes (skills, agent definitions, prompts, tool documentation, AGENTS.md) from a prepared worktree to a pull request with a GREEN CI pipeline. One headless skill — process-prompt-engineer — backed by five subagents (prose-context-extractor, prose-planner, scenario-critic, prose-writer, prose-reviewer). Evidence that fits prose instead of text-pin tests: lint, step replay on a rebuilt real case, isolated blind tests, baseline vs. after. Speaks the adev:event contract of agent-autonomous-developer. Never asks a human. Drives the agent-project-issues MCP.",
+  "version": "0.0.5",
+  "author": {
+    "name": "Arne von Appen"
+  },
+  "dependencies": [
+    {
+      "name": "agent-project-issues",
+      "version": ">=0.3.9 <1.0.0"
+    }
+  ]
+}

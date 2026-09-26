@@ -1,0 +1,28 @@
+{
+  "description": "Refuse every backgrounded command and every Monitor call up front inside a process-prompt-engineer run or one of this plugin's subagents; block the process-prompt-engineer session itself from ending its turn with an unresolved backgrounded command or with work no remote has.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/check-no-background.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/check-session-turn-end.mjs\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
