@@ -3,12 +3,18 @@ name: release
 # Manual release flow:
 #   1. Trigger via Actions tab -> "Run workflow" -> enter version (e.g. 0.0.1)
 #      or via CLI: gh workflow run release.yml -f version=0.0.1
-#   2. Workflow stamps version into plugin.json (in CI only), pushes an orphan
-#      release branch with install-ready files, creates the
-#      agent-autonomous-prompt-engineer--v{version} tag on that commit, and publishes a
-#      GitHub Release with the zip attached.
+#   2. While the workspace is still `main`, the workflow computes release
+#      notes with scripts/release_notes.py (history since the previous
+#      release tag) into $RUNNER_TEMP, then stamps version into plugin.json
+#      (in CI only), pushes an orphan release branch with install-ready
+#      files -- its commit carries a `Source-Commit: <sha>` trailer pointing
+#      back at the `main` commit it was built from -- creates the
+#      agent-autonomous-prompt-engineer--v{version} tag on that commit, and
+#      publishes a GitHub Release with the zip and the computed notes
+#      attached.
 #   3. The workflow then notifies agent-marketplace directly via
-#      ECOSYSTEM_TOKEN.
+#      ECOSYSTEM_TOKEN, with a payload built by scripts/release_payload.sh
+#      (same computed notes, plus name/description/repo/version/ref).
 on:
   workflow_dispatch:
     inputs:
@@ -38,6 +44,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Compute release notes
+        id: notes
+        shell: bash
+        run: |
+          # Runs while the workspace is still `main` (fetch-depth: 0 above
+          # brought the tags) and before anything switches to the orphan
+          # `release` branch. Written under $RUNNER_TEMP, outside the
+          # workspace, so it survives the `git clean -fdx` later in this job.
+          PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
+          SRC=$(git rev-parse HEAD)
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          python3 scripts/release_notes.py --tag-prefix "${PLUGIN_NAME}--v" --out "$NOTES_FILE"
+          echo "notes=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "src=$SRC"          >> "$GITHUB_OUTPUT"
 
       - name: Fail if tag already exists
         shell: bash
@@ -149,7 +170,8 @@ jobs:
           find . -mindepth 1 -not -path './.git*' | sort
 
           git add -A
-          git commit -m "release: v${{ inputs.version }}"
+          git commit -m "release: v${{ inputs.version }}" \
+                     -m "Source-Commit: ${{ steps.notes.outputs.src }}"
           git push origin release --force
 
           SHA=$(git rev-parse HEAD)
@@ -166,7 +188,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --target "${{ steps.rel.outputs.sha }}" \
             --title "$TAG" \
-            --generate-notes \
+            --notes-file "${{ steps.notes.outputs.notes }}" \
             ${{ contains(inputs.version, '-') && '--prerelease' || '' }} \
             "${{ steps.rel.outputs.asset }}"
 
@@ -178,26 +200,13 @@ jobs:
         env:
           GH_PAT:  ${{ secrets.ECOSYSTEM_TOKEN }}
           VERSION: ${{ inputs.version }}
+          REPO:    ${{ github.repository }}
         run: |
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
           TAG="${NAME}--v${VERSION}"
-          PAYLOAD=$(cat <<EOF
-          {
-            "event_type": "plugin-release",
-            "client_payload": {
-              "name":        "${NAME}",
-              "description": "${DESC}",
-              "repo":        "${{ github.repository }}",
-              "category":    "skill",
-              "version":     "${VERSION}",
-              "ref":         "${TAG}",
-              "icon":        "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png",
-              "description_url": "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md"
-            }
-          }
-          EOF
-          )
+          export NAME DESC TAG
+          PAYLOAD=$(bash scripts/release_payload.sh "${{ steps.notes.outputs.notes }}")
 
           # Staging first (lands straight to main, no review), then the
           # curated marketplace (opens a review PR) -- same payload, two
